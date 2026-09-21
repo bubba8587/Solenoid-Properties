@@ -1,12 +1,12 @@
 {
   "name": "solenoid-properties",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "type": "module",
   "description": "List, Matrix, Frame and Cube property types, with Solenoid's chips and table editors.",
   "license": "MIT",
   "scripts": {
-    "build": "PLUGIN_OUT=dist vite build --config obsidian-plugin/vite.config.ts"
+    "build": "tsc --noEmit && PLUGIN_OUT=dist vite build --config obsidian-plugin/vite.config.ts"
   },
   "dependencies": {
     "@fontsource-variable/atkinson-hyperlegible-mono": "5.3.0",
