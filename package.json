@@ -1,0 +1,36 @@
+{
+  "name": "solenoid-properties",
+  "version": "0.1.1",
+  "private": true,
+  "type": "module",
+  "description": "List, Matrix, Frame and Cube property types, with Solenoid's chips and table editors.",
+  "license": "MIT",
+  "scripts": {
+    "build": "PLUGIN_OUT=dist vite build --config obsidian-plugin/vite.config.ts"
+  },
+  "dependencies": {
+    "@fontsource-variable/atkinson-hyperlegible-mono": "5.3.0",
+    "@fontsource-variable/atkinson-hyperlegible-next": "5.3.0",
+    "chrono-node": "2.10.1",
+    "papaparse": "5.7.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "rete": "2.0.6"
+  },
+  "devDependencies": {
+    "@types/papaparse": "5.5.2",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.1.1",
+    "estree-walker": "3.0.3",
+    "magic-string": "0.30.21",
+    "obsidian": "1.13.1",
+    "postcss": "8.5.28",
+    "rollup-plugin-license": "3.7.1",
+    "typescript": "7.0.2",
+    "vite": "8.3.0"
+  },
+  "overrides": {
+    "rolldown": "1.2.8"
+  }
+}

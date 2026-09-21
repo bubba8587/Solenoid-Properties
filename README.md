@@ -48,6 +48,15 @@ orders:
 
 **Note on existing bug:** A Frame's per-column types are stored in the plugin's `data.json` for better YAML parseability and these are not currently forwarded to the main app, which may guess the data type incorrectly. This will be fixed in the next bugfix release.
 
+## Disclosures
+
+- **Clipboard:** the pop-up editor's Copy, Copy as Markdown and copy-cell actions write to the system clipboard when you use them. The plugin never reads the clipboard.
+- **No network access, no telemetry.** The plugin's settings and a Frame's column types are kept in the plugin's own `data.json`.
+
+## Source
+
+The source in `src/` and `obsidian-plugin/` is a snapshot exported from [bubba8587/solenoid](https://github.com/bubba8587/solenoid), where the plugin is developed, because the chips and editors are Solenoid's own components; `source.json` names the commit. `npm ci && npm run build` builds `dist/` from it, and each release's files carry a GitHub build provenance attestation.
+
 ## License
 
-MIT. The bundle's third-party licenses (React, chrono-node, PapaParse, the Atkinson Hyperlegible fonts) ship with each release as `third-party-licenses.txt`.
+MIT. The bundle's third-party licenses (React, chrono-node, PapaParse, the Atkinson Hyperlegible fonts) are in [`THIRD-PARTY-LICENSES.txt`](THIRD-PARTY-LICENSES.txt).

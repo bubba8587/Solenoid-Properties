@@ -1,0 +1,27 @@
+// [[B15]] leanCore, [[C79]] packActivationIsPresentation
+// The one module that knows both packs and the FC store: every pack's units/formats
+// register for resolution; only ACTIVE packs' entries reach the dropdowns.
+
+import { allPacks, packsStore } from "./packs";
+import {
+  registerPackUnits, registerPackFormats,
+  type PackUnit, type PackFormat,
+} from "./formatAnnotationStore";
+
+/** Register every known pack's FC units/formats for resolution. Call once at startup. */
+export function initPackFcExtensions(): void {
+  for (const p of allPacks()) {
+    if (p.units) registerPackUnits(p.units);
+    if (p.formats) registerPackFormats(p.formats);
+  }
+}
+
+/** Units contributed by currently-active packs (for the FC unit dropdown). */
+export function activePackUnits(): PackUnit[] {
+  return allPacks().filter((p) => packsStore.isActive(p.id)).flatMap((p) => p.units ?? []);
+}
+
+/** Number formats contributed by currently-active packs (for the FC format dropdown). */
+export function activePackFormats(): PackFormat[] {
+  return allPacks().filter((p) => packsStore.isActive(p.id)).flatMap((p) => p.formats ?? []);
+}

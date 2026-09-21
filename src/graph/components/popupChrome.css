@@ -1,0 +1,314 @@
+/* Shared chrome for floating popups (Formula, Table, …). One source of truth so
+   every popup reads as an extension of the node it opened from: same surface, the
+   accent header, and — when the host node is in a group — the same group-color
+   outer border + lower-right membership triangle a node card shows.
+
+   A popup opts in by putting `sol-popup` on its card, `sol-popup__header` on its
+   header, and (when grouped) `sol-popup--grouped` on the card. It sets
+   `--node-accent` for the header tint and `--group-color` for the membership
+   framing, exactly like NodeCard does. */
+
+.sol-popup-overlay {
+  position: fixed;
+  inset: 0;
+  /* Above the full-screen overlays (Report / Composite editor / Function
+     Reference, all z-index 9000) so a value popup opened FROM inside one — e.g.
+     clicking a frame chip in a Report — lands ON TOP of it, not behind. Still
+     below the transient SocketContextMenu (9999). A value popup is always a
+     focused modal, so topmost-among-content is correct everywhere it opens. */
+  z-index: 9500;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* Breathing room so a popup never kisses the screen edge on a phone. */
+  padding: 10px;
+  box-sizing: border-box;
+  background: rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+}
+
+/* Mirrors a node card: same surface, 1px body border, 6px radius. The body border is
+   drawn by ::after (below), NOT on the card, so it shares the card's box with the accent
+   header — one rounding basis, so the two edges can't crack apart at a fractional DPR
+   (Chromium rounds each element's border independently; a card border + a header
+   overhang derive from different boxes and split by 1px at 125%/150% zoom — the reason
+   the node cards went to an SVG frame). */
+.sol-popup {
+  position: relative;
+  box-sizing: border-box;
+  /* Never exceed the (padded) viewport — the overlay's flex-center won't shrink a
+     fixed-width card on its own, so cap it here. */
+  max-width: 100%;
+  max-height: 100%;
+  background: var(--surface);
+  border: none;
+  border-radius: 6px;
+  box-shadow: var(--shadow-pop);
+  font-family: inherit;
+  color: var(--text);
+}
+/* The body border: sides + bottom, starting BELOW the accent header (--header-h,
+   published by PopupShell). Derived from the card's own box, exactly like the header —
+   that shared basis is what keeps them aligned. */
+.sol-popup::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  top: var(--header-h, 34px);
+  border: 1px solid var(--border);
+  border-top: none;
+  border-bottom-left-radius: 6px;
+  border-bottom-right-radius: 6px;
+  pointer-events: none;
+}
+/* Light mode frames an ungrouped node card's body in its darkened accent (not gray) —
+   the popup body border mirrors that so it matches the card it came from. Dark mode's
+   body border is already the neutral --border on both. Grouped popups keep the
+   group-color-dark rule below. */
+:root[data-theme="light"] .sol-popup:not(.sol-popup--grouped)::after {
+  border-color: var(--node-accent-dark, var(--border));
+}
+
+/* Form controls don't inherit font-family from the UA stylesheet — a <button>
+   falls back to the platform default. Force every popup button/select to the app
+   font so the footer (Copy, Grid/CSV, +Row, Save…) matches the rest of the UI.
+   The grid inputs and CSV textarea opt back into the mono font themselves. */
+.sol-popup button,
+.sol-popup select {
+  font-family: inherit;
+}
+
+/* Header — mirrors .solenoid-node__header: 2px accent border on top + sides
+   pulled over the card's own border so the accent is the outermost edge, tinted
+   background, inset bottom divider (a real bottom border would mitre into a wedge
+   against the 2px sides), top corners rounded to the card. */
+.sol-popup__header {
+  position: relative;
+  box-sizing: border-box;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px 8px 14px;
+  /* No overhang: the card draws no border, so the header spans the card box directly
+     (same box the ::after body border uses) — that's the shared rounding basis. */
+  margin: 0;
+  border: 2px solid var(--node-accent, transparent);
+  border-bottom: none;
+  box-shadow: inset 0 -1px 0 var(--border);
+  border-top-left-radius: 6px;
+  border-top-right-radius: 6px;
+  background: color-mix(in srgb, var(--node-accent, var(--surface)) var(--header-tint), var(--surface));
+}
+
+/* Title — echoes the node label: accent-tinted, uppercase, tracked. */
+.sol-popup__title {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--node-accent, var(--text-dim)) var(--mix-ink), var(--text));
+}
+
+.sol-popup__close {
+  flex-shrink: 0;
+  /* Flex-center the × glyph instead of letting it ride the text baseline — the
+     global `button { font-family: inherit }` rule shifts a baseline-aligned glyph
+     a few px off-center. */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  background: none;
+  border: none;
+  color: color-mix(in srgb, var(--node-accent, var(--text-dim)) var(--mix-ink), var(--text));
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+}
+.sol-popup__close:hover { color: color-mix(in srgb, var(--node-accent, var(--text)) 80%, var(--text)); }
+
+/* A muted text action in the header cluster (e.g. Copy SVG), resting like close and
+   brightening on hover; icon-height so it lines up with the pin/close boxes. */
+.sol-popup__action {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 8px;
+  background: none;
+  border: none;
+  color: color-mix(in srgb, var(--node-accent, var(--text-dim)) var(--mix-ink), var(--text));
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+.sol-popup__action:hover { color: color-mix(in srgb, var(--node-accent, var(--text)) 80%, var(--text)); }
+
+/* Pin action — sits beside the close in the header. Same 24px even box as close
+   (icon-parity rule), resting muted like close; brightens on hover, and reads
+   accent-filled while the value is pinned so the popup shows the pin's state. */
+.sol-popup__pin {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  background: none;
+  border: none;
+  border-radius: 4px;
+  color: color-mix(in srgb, var(--node-accent, var(--text-dim)) var(--mix-ink), var(--text));
+  cursor: pointer;
+  padding: 0;
+  opacity: 0.7;
+}
+.sol-popup__pin:hover {
+  opacity: 1;
+  color: color-mix(in srgb, var(--node-accent, var(--text)) 80%, var(--text));
+}
+
+/* Header ⋯ overflow menu (PopupOverflowMenu) — the trigger matches the pin/close
+   icon buttons; the dropdown floats below-right, tucked inside the popup card. */
+.sol-popup-menu {
+  position: relative;
+  flex-shrink: 0;
+  display: inline-flex;
+}
+.sol-popup-menu__trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  background: none;
+  border: none;
+  border-radius: 4px;
+  color: color-mix(in srgb, var(--node-accent, var(--text-dim)) var(--mix-ink), var(--text));
+  cursor: pointer;
+  padding: 0;
+  opacity: 0.7;
+}
+.sol-popup-menu__trigger:hover {
+  opacity: 1;
+  color: color-mix(in srgb, var(--node-accent, var(--text)) 80%, var(--text));
+}
+.sol-popup-menu__list {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 20;
+  min-width: 168px;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  background: var(--surface-raised, var(--surface));
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: var(--shadow-pop);
+}
+.sol-popup-menu__item {
+  text-align: left;
+  padding: 6px 10px;
+  background: none;
+  border: none;
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.sol-popup-menu__item:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--node-accent, var(--text)) 12%, transparent);
+}
+.sol-popup-menu__item:disabled {
+  color: var(--text-dim);
+  cursor: default;
+}
+.sol-popup__pin--on {
+  opacity: 1;
+  color: var(--node-accent, var(--accent));
+  background: color-mix(in srgb, var(--node-accent, var(--accent)) 16%, transparent);
+}
+
+/* ── Group membership — mirrors .solenoid-node--grouped + its corner triangle ── */
+/* Membership color is the BODY border (::after), 2px; the accent header is unchanged. */
+.sol-popup--grouped::after {
+  border-width: 2px;
+  border-color: color-mix(in srgb, var(--group-color, var(--text-dim)) 78%, transparent);
+}
+:root[data-theme="light"] .sol-popup--grouped::after {
+  border-color: var(--group-color-dark, var(--border-strong));
+}
+/* Membership corner: a small solid triangle of the group color tucked into the
+   lower-right, at the card box edge (inset 0, the card's own 6px corner). */
+.sol-popup--grouped::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--group-color, var(--text-dim)) 78%, var(--surface));
+  clip-path: polygon(100% 100%, 100% calc(100% - 18px), calc(100% - 18px) 100%);
+  pointer-events: none;
+  z-index: 5;
+}
+:root[data-theme="light"] .sol-popup--grouped::before {
+  background: var(--group-color-dark, var(--border-strong));
+}
+
+/* ── Resize (PopupShell `resizable`) ── */
+/* A sized card is a flex column: header + footer stay natural, the marked scroll
+   region fills. Only applied once sized, so an unsized popup keeps its own layout. */
+.sol-popup--sized {
+  display: flex;
+  flex-direction: column;
+}
+.sol-popup--sized .sol-popup__scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
+}
+/* Corner grip — the same mark as the node/field grips (glyph in nodeCard.css). Sits
+   ABOVE the group-membership corner triangle (z 5), which shares this corner. */
+.sol-popup__resize {
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-dim);
+  opacity: 0.5;
+  cursor: nwse-resize;
+  z-index: 6;
+  /* Or the browser reclaims the finger for scrolling a few px in and cancels the drag. */
+  touch-action: none;
+}
+.sol-popup__resize:hover {
+  opacity: 0.9;
+  color: var(--node-accent, var(--accent));
+}
+@media (pointer: coarse) {
+  .sol-popup__resize { right: 0; bottom: 0; padding: 7px; opacity: 0.7; }
+}
+
+/* Touch devices: bigger header tap targets (close / pin) and a touch-friendly
+   title so the chrome scales on a phone. Shared by every popup. */
+@media (pointer: coarse) {
+  .sol-popup__header { padding: 10px 10px 10px 14px; }
+  .sol-popup__close,
+  .sol-popup__pin { width: 34px; height: 34px; }
+  .sol-popup__close { font-size: 24px; }
+  .sol-popup__title { font-size: 13px; }
+}
