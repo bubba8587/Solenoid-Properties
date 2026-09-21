@@ -1,0 +1,85 @@
+# Builds the plugin from the Solenoid commit pinned in source.json and publishes a GitHub
+# Release with the files Obsidian installs. Runs on a tag push (the tag is the bare version,
+# e.g. 0.1.0) or by hand from the Actions tab with the version typed in; the by-hand run
+# creates the tag.
+name: Release
+
+on:
+  push:
+    tags:
+      - "[0-9]+.[0-9]+.[0-9]+"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release; must equal manifest.json's"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ github.event.inputs.version || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read the pin and check the version
+        id: pin
+        run: |
+          echo "repo=$(jq -r .repo source.json)" >> "$GITHUB_OUTPUT"
+          echo "ref=$(jq -r .ref source.json)" >> "$GITHUB_OUTPUT"
+          manifest=$(jq -r .version manifest.json)
+          if [ "$VERSION" != "$manifest" ]; then
+            echo "::error::release $VERSION but manifest.json says $manifest"; exit 1
+          fi
+          jq -e --arg v "$VERSION" 'has($v)' versions.json > /dev/null \
+            || { echo "::error::versions.json has no entry for $VERSION"; exit 1; }
+
+      - name: Check out Solenoid at the pinned commit
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.pin.outputs.repo }}
+          ref: ${{ steps.pin.outputs.ref }}
+          path: solenoid
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: solenoid/package-lock.json
+
+      - name: Install
+        working-directory: solenoid
+        run: npm ci
+
+      - name: Build the plugin
+        working-directory: solenoid
+        run: npm run plugin:build
+
+      - name: Collect the release files
+        run: |
+          out=solenoid/demo-vault/.obsidian/plugins/solenoid-properties
+          if ! diff <(jq -S . manifest.json) <(jq -S . "$out/manifest.json"); then
+            echo "::error::manifest.json differs from obsidian-plugin/manifest.json at the pinned commit"; exit 1
+          fi
+          mkdir release
+          cp "$out/main.js" "$out/styles.css" "$out/third-party-licenses.txt" release/
+          cp manifest.json release/
+          ls -l release
+
+      - name: Publish the release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.VERSION }}
+          name: ${{ env.VERSION }}
+          files: |
+            release/main.js
+            release/manifest.json
+            release/styles.css
+            release/third-party-licenses.txt
+          body: |
+            Built from [bubba8587/solenoid@${{ steps.pin.outputs.ref }}](https://github.com/${{ steps.pin.outputs.repo }}/tree/${{ steps.pin.outputs.ref }}).
+
+            Manual install: copy `main.js`, `manifest.json` and `styles.css` into `<vault>/.obsidian/plugins/solenoid-properties/` and enable the plugin in Settings → Community plugins.
