@@ -52,17 +52,7 @@ This repository holds the manifest and the releases. The plugin's source is the 
 2. Here, set `source.json`'s `ref` to that commit, copy the manifest over, add the version to `versions.json` with its `minAppVersion`, and push.
 3. Create the release: push a tag equal to the version (`0.1.0`, no `v`), or open Actions → Release → Run workflow and type the version. The workflow builds and attaches the files.
 
-The community list entry, for the pull request to [obsidianmd/obsidian-releases](https://github.com/obsidianmd/obsidian-releases):
-
-```json
-{
-  "id": "solenoid-properties",
-  "name": "Solenoid Properties",
-  "author": "Solenoid",
-  "description": "List, Matrix, Frame and Cube property types, with Solenoid's chips and table editors.",
-  "repo": "bubba8587/Solenoid-Properties"
-}
-```
+The community listing is submitted once, through [community.obsidian.md](https://community.obsidian.md) (sign in, link GitHub, add this repository). Its automated review scans every published release after that, so a release is never left as a draft.
 
 ## License
 
