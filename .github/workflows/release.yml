@@ -1,7 +1,8 @@
 # Builds the plugin from the Solenoid commit pinned in source.json and publishes a GitHub
 # Release with the files Obsidian installs. Runs on a tag push (the tag is the bare version,
 # e.g. 0.1.0) or by hand from the Actions tab with the version typed in; the by-hand run
-# creates the tag.
+# creates the tag. Run by hand with "publish" off, it only builds and keeps the files as a run
+# artifact: a check that the pinned commit builds, with no release made.
 name: Release
 
 on:
@@ -13,6 +14,10 @@ on:
       version:
         description: "Version to release; must equal manifest.json's"
         required: true
+      publish:
+        description: "Publish the release (off: build only, files land as a run artifact)"
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -69,7 +74,15 @@ jobs:
           cp manifest.json release/
           ls -l release
 
+      - name: Keep the files as a run artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: solenoid-properties-${{ env.VERSION }}
+          path: release/
+          if-no-files-found: error
+
       - name: Publish the release
+        if: github.event_name == 'push' || github.event.inputs.publish == 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.VERSION }}
