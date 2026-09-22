@@ -15,8 +15,9 @@ import type { ReactNode } from "react";
 import { PropertyChip } from "./PropertyChip";
 import { PaletteSwatches } from "./PaletteSwatches";
 import { PROPERTY_KINDS, validateYaml, readColumnTypes, scalarText, cellToYaml, type PropertyKind, type ColumnTypes } from "./yamlValue";
-import { createShadowHost, releaseShadowHost, popupLayerRoot, removePopupLayer, homePopupLayer, adoptSheets, syncTheme, refreshTokens, openPopupsOver } from "./shadow";
+import { createShadowHost, releaseShadowHost, popupLayerRoot, removePopupLayer, homePopupLayer, adoptSheets, syncTheme, refreshTokens, openPopupsOver, setAccentSlot } from "./shadow";
 import { CUSTOM_ICONS, kindIcon } from "./icons";
+import { LOOK_CLASS, DEFAULT_ACCENT, paletteClass, accentClass, isAccentSlot } from "./lookTokens";
 
 /** What Obsidian hands a property widget (read from the 1.13 source; not in the public API). */
 interface WidgetContext {
@@ -39,9 +40,7 @@ interface MetadataTypeManager {
 
 interface Mount { host: HTMLElement; root: Root; attached: boolean }
 
-interface PluginData { palette?: string; columnTypes?: Record<string, ColumnTypes>; look?: boolean }
-
-const LOOK_CLASS = "solenoid-look";
+interface PluginData { palette?: string; accent?: string; columnTypes?: Record<string, ColumnTypes>; look?: boolean }
 
 const SOLENOID_LINKS = ["https://solenoid-ngc.vercel.app", "https://github.com/bubba8587/solenoid"];
 
@@ -52,10 +51,16 @@ export default class SolenoidPropertiesPlugin extends Plugin {
 
   async onload(): Promise<void> {
     const stored = ((await this.loadData()) ?? {}) as PluginData;
-    this.data = { palette: stored.palette, columnTypes: readColumnTypes(stored.columnTypes), look: stored.look === true };
+    this.data = {
+      palette: stored.palette,
+      accent: isAccentSlot(stored.accent) ? stored.accent : DEFAULT_ACCENT,
+      columnTypes: readColumnTypes(stored.columnTypes),
+      look: stored.look === true,
+    };
     // The app's stores keep nothing here (their `localStorage` is memory in this build): the
-    // vault's own data decides the palette.
+    // vault's own data decides the palette and the accent.
     paletteStore.setActiveBase((this.data.palette ?? "Default") as PaletteName);
+    setAccentSlot(this.accent);
 
     for (const [id, svg] of Object.entries(CUSTOM_ICONS)) addIcon(id, svg);
     const widgets = this.typeManager().registeredTypeWidgets;
@@ -73,7 +78,7 @@ export default class SolenoidPropertiesPlugin extends Plugin {
   }
 
   onunload(): void {
-    for (const doc of this.windows()) doc.body.removeClass(LOOK_CLASS);
+    for (const doc of this.windows()) this.shedLook(doc);
     const widgets = this.typeManager().registeredTypeWidgets;
     for (const kind of PROPERTY_KINDS) delete widgets[kind.id];
     tablePopup.close();
@@ -91,17 +96,39 @@ export default class SolenoidPropertiesPlugin extends Plugin {
     return docs;
   }
 
-  /** The Solenoid look is a class on the body: every rule of it hangs under that class. */
+  /** The Solenoid look is three classes on the body: the look, which every rule of it hangs
+   *  under, and the palette and accent, which pick its tokens. */
   wearLook(doc?: Document): void {
-    for (const d of doc ? [doc] : this.windows()) d.body.toggleClass(LOOK_CLASS, this.data.look === true);
+    const wear = [LOOK_CLASS, paletteClass(paletteStore.activeBase()), accentClass(this.accent)];
+    for (const d of doc ? [doc] : this.windows()) {
+      this.shedLook(d, wear);
+      // One class per call: Obsidian's `toggleClass` tests `instanceof Array`, which an array
+      // made in this window fails in another (the settings window, a popped-out note).
+      for (const cls of wear) d.body.toggleClass(cls, this.look);
+    }
+  }
+
+  /** Every class of ours but `keep`, a stray one included. */
+  private shedLook(doc: Document, keep: string[] = []): void {
+    for (const cls of Array.from(doc.body.classList)) {
+      if (cls.startsWith("solenoid-") && !keep.includes(cls)) doc.body.removeClass(cls);
+    }
   }
 
   get look(): boolean { return this.data.look === true; }
+  get accent(): string { return this.data.accent ?? DEFAULT_ACCENT; }
 
   async setLook(on: boolean): Promise<void> {
     this.data.look = on;
     this.wearLook();
+    this.announceCss();
     await this.saveData(this.data);
+  }
+
+  /** A class swap on the body changes what the CSS says, and the graph view (a canvas) reads
+   *  its colors only when Obsidian says the CSS changed. */
+  private announceCss(): void {
+    this.app.workspace.trigger("css-change");
   }
 
   /** The one popup layer, rendered in whichever window it currently lives in. */
@@ -114,7 +141,19 @@ export default class SolenoidPropertiesPlugin extends Plugin {
   async setPalette(name: PaletteName): Promise<void> {
     paletteStore.setActiveBase(name);
     refreshTokens();
+    this.wearLook();
+    this.announceCss();
     this.data.palette = name;
+    await this.saveData(this.data);
+  }
+
+  async setAccent(slot: string): Promise<void> {
+    if (!isAccentSlot(slot)) return;
+    this.data.accent = slot;
+    setAccentSlot(slot);
+    refreshTokens();
+    this.wearLook();
+    this.announceCss();
     await this.saveData(this.data);
   }
 
@@ -229,15 +268,19 @@ class SolenoidSettingTab extends PluginSettingTab {
         name: "Color palette",
         render: (setting) => {
           // Settings is a window of its own.
-          setting.settingEl.ownerDocument.body.toggleClass(LOOK_CLASS, this.plugin.look);
-          // The app's Settings row: the dropdown with the swatch legend stacked under it.
+          this.plugin.wearLook(setting.settingEl.ownerDocument);
+          // The app's Settings row, with the toolbar's accent picker stacked under the dropdown.
           setting.addDropdown((dropdown) => {
             for (const name of paletteStore.names()) dropdown.addOption(name, name);
             dropdown.setValue(paletteStore.activeBase());
-            dropdown.onChange((name) => void this.plugin.setPalette(name as PaletteName));
+            dropdown.onChange(async (name) => {
+              await this.plugin.setPalette(name as PaletteName);
+              this.plugin.wearLook(setting.settingEl.ownerDocument);
+            });
           });
           setting.controlEl.addClass("solenoid-settings-palette");
-          this.plugin.mount(setting.controlEl, "solenoid-settings-swatches", <PaletteSwatches />);
+          this.plugin.mount(setting.controlEl, "solenoid-settings-swatches",
+            <PaletteSwatches accent={() => this.plugin.accent} onPick={(slot) => void this.plugin.setAccent(slot).then(() => this.plugin.wearLook(setting.settingEl.ownerDocument))} />);
         },
       },
       {
@@ -245,13 +288,14 @@ class SolenoidSettingTab extends PluginSettingTab {
         render: (setting) => {
           setting.addToggle((toggle) => toggle.setValue(this.plugin.look).onChange(async (on) => {
             await this.plugin.setLook(on);
-            setting.settingEl.ownerDocument.body.toggleClass(LOOK_CLASS, on);
+            this.plugin.wearLook(setting.settingEl.ownerDocument);
           }));
         },
       },
       {
         name: "Solenoid",
         render: (setting) => {
+          setting.controlEl.addClass("solenoid-settings-links");
           for (const url of SOLENOID_LINKS) {
             setting.controlEl.createEl("a", { text: url.replace("https://", ""), href: url, cls: "external-link", attr: { target: "_blank", rel: "noopener" } });
           }

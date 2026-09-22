@@ -4,7 +4,7 @@ An Obsidian plugin that adds [Solenoid](https://solenoid-ngc.vercel.app)'s objec
 
 ![A note's properties shown as Solenoid chips: lists, a table, a frame and a cube](https://raw.githubusercontent.com/bubba8587/Solenoid-Properties/main/images/1.png)
 
-The plugin also ships a theme to make your Obsidian vault look and feel like Solenoid! (Default palette only.) Enable it in the plugin settings.
+The plugin also ships a theme to make your Obsidian vault look and feel like Solenoid, in any of Solenoid's palettes and with the accent you pick. Enable it in the plugin settings.
 
 ![An Obsidian vault wearing the Solenoid look](https://raw.githubusercontent.com/bubba8587/Solenoid-Properties/main/images/3.png)
 
