@@ -1,4 +1,4 @@
-// [[C107]] obsidianPlugin
+// [[C107]] obsidianPlugin, [[D72]] pluginSaveWritesSourceText
 import { useRef, useState, useSyncExternalStore } from "react";
 import { ArrayChip, arrayAccentFor } from "../../src/graph/components/ArrayChip";
 import { themeVersion, tokenHex } from "./shadow";
@@ -60,7 +60,7 @@ export function PropertyChip({ kind, label, initial, onChange, columnTypes, onCo
           cellType: popupCellType(family),
           list: false,
           fixedCols: true,
-          onSaveRaw: (cells) => commit(listToYaml(cells, family)),
+          onSaveRaw: (cells) => commit(listToYaml(cells, yaml)),
         }}
       />
     );
@@ -82,7 +82,7 @@ export function PropertyChip({ kind, label, initial, onChange, columnTypes, onCo
           data: raw.length ? raw : [[""]],
           cellType: popupCellType(family),
           list: false,
-          onSaveRaw: (cells) => commit(matrixToYaml(cells, family)),
+          onSaveRaw: (cells) => commit(matrixToYaml(cells, yaml)),
         }}
       />
     );
@@ -104,7 +104,7 @@ export function PropertyChip({ kind, label, initial, onChange, columnTypes, onCo
           const types = columnTypesOf(columns);
           setPicked((prev) => ({ ...prev, ...types }));
           onColumnTypes?.(types);
-          commit(frameSourceToYaml(columns));
+          commit(frameSourceToYaml(columns, yaml));
         }}
         popupOverrides={{ unitTaggable: false, noFormulaColumns: true }}
       />
