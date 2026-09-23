@@ -46,8 +46,6 @@ orders:
 
 ![Solenoid importing the same note, each property on its own typed socket](https://raw.githubusercontent.com/bubba8587/Solenoid-Properties/main/images/4.png)
 
-**Note on existing bug:** A Frame's per-column types are stored in the plugin's `data.json` for better YAML parseability and these are not currently forwarded to the main app, which may guess the data type incorrectly. This will be fixed in the next bugfix release.
-
 ## Knap notes
 
 Add `knap: true` to a note's properties and Reading view renders its body as a [Knap](https://knap.md) template, filled from the note's own properties:
