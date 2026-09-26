@@ -10,18 +10,22 @@ import { PopupOverflowMenu } from "./PopupOverflowMenu";
 import { useColumnSort, sortedOrder, sortKeyOf, sortDirOf, SortButton, type SortKey } from "./columnSort";
 import { copyText } from "../clipboard";
 import { saveCsvFileDialog } from "../fileBridge";
+import { csvField } from "../csvSafety";
 import { APP_LOCALE } from "../locale";
 import "./TablePopup.css";
 
-// The current drill level, normalized across the view kinds so the table markup
-// below is written once. A list lies across ONE ROW unless `listVertical`.
-function describe(view: DrillView, listVertical: boolean): {
-  headers: string[] | null; // null → numeric column labels (grid view)
+/** What was typed, for the Source switch: a value as its text, a nested container still a chip. */
+function sourceItem(v: unknown, crumb: string, at: { r: number; c: number }): ReactNode {
+  if (v !== null && typeof v === "object") return <CubeCellChip cell={v as CubeCell} crumb={crumb} size="sm" at={at} />;
+  return v == null ? "" : typeof v === "boolean" ? (v ? "TRUE" : "FALSE") : String(v);
+}
+
+function describe(view: DrillView, listVertical: boolean, source: boolean): {
+  headers: string[] | null;
   rows: number;
   cols: number;
-  depth: number | null;     // cube only
+  depth: number | null;
   cell: (r: number, c: number) => ReactNode;
-  /** The RAW cell reduced for sorting — never the rendered node. */
   sortKey: (r: number, c: number) => SortKey;
 } {
   if (view.kind === "cube") {
@@ -48,13 +52,16 @@ function describe(view: DrillView, listVertical: boolean): {
   }
   if (view.kind === "list") {
     const items = view.items;
+    const item = (i: number, at: { r: number; c: number }) => (source
+      ? sourceItem(items[i] ?? null, "item", at)
+      : <CubeCellChip cell={(items[i] ?? null) as CubeCell} crumb="item" size="sm" type={view.type} at={at} />);
     if (!listVertical) {
       return {
         headers: null,
         rows: 1,
         cols: items.length,
         depth: null,
-        cell: (_r, c) => <CubeCellChip cell={(items[c] ?? null) as CubeCell} crumb="item" size="sm" at={{ r: 0, c }} />,
+        cell: (_r, c) => item(c, { r: 0, c }),
         sortKey: (_r, c) => sortKeyOf(items[c] ?? null),
       };
     }
@@ -63,7 +70,7 @@ function describe(view: DrillView, listVertical: boolean): {
       rows: items.length,
       cols: 1,
       depth: null,
-      cell: (r) => <CubeCellChip cell={(items[r] ?? null) as CubeCell} crumb="item" size="sm" at={{ r, c: 0 }} />,
+      cell: (r) => item(r, { r, c: 0 }),
       sortKey: (r) => sortKeyOf(items[r] ?? null),
     };
   }
@@ -78,9 +85,6 @@ function describe(view: DrillView, listVertical: boolean): {
   };
 }
 
-/** The current level's cell as export text — same reducer as the compact
- *  preview, so a nested container serializes as its chip token
- *  ("[3×2×1 Cube]", "[5×2 Frame]", "[a, b, c…]"), never expanded. */
 function tokenAt(view: DrillView, r: number, c: number, listVertical: boolean): string {
   if (view.kind === "cube") {
     const col = view.cube.columns[c];
@@ -94,19 +98,10 @@ function tokenAt(view: DrillView, r: number, c: number, listVertical: boolean): 
   return cubeCellToken(view.cells[r]?.[c] ?? null);
 }
 
-// RFC 4180 quoting; the viewer is read-only, so formula-trigger text is
-// apostrophe-neutralized on export (the TablePopup read-only posture).
-function csvEsc(s: string): string {
-  let out = s;
-  if (/^[=+\-@\t\r]/.test(out) && Number.isNaN(Number(out))) out = `'${out}`;
-  return /[",\n]/.test(out) ? `"${out.replace(/"/g, '""')}"` : out;
-}
+const csvEsc = (s: string): string => csvField(s, true);
 function mdEsc(s: string): string {
   return s.replace(/\|/g, "\\|").replace(/\r?\n/g, " ");
 }
-/** Full source-order serialization of the CURRENT drill level — every row, not
- *  just the rendered window (text is cheap; only the DOM needed the cap). */
-/** The level as text — every row, in the given (visual-sort) order. */
 function levelText(view: DrillView, headers: string[] | null, order: readonly number[], cols: number, kind: "csv" | "md", listVertical: boolean): string {
   const head = headers ?? Array.from({ length: cols }, (_, c) => `Col ${c + 1}`);
   const row = (r: number) => Array.from({ length: cols }, (_, c) => tokenAt(view, r, c, listVertical));
@@ -120,22 +115,15 @@ function levelText(view: DrillView, headers: string[] | null, order: readonly nu
   return md.map((cells) => `| ${cells.join(" | ")} |`).join("\n");
 }
 
-/** The one read-only viewer for every nesting kind: a nested-container cell drills
- *  DEEPER IN PLACE via the breadcrumb, so a second window never opens. */
 export function CubePopup() {
   const state = useSyncExternalStore(cubePopup.subscribe, cubePopup.get);
-  // An editing level: the Cube Input's records at this level's path back the cells.
   const last = state?.stack[state.stack.length - 1];
   const editView = state?.edit && last && last.path ? last : null;
   useSyncExternalStore(appThemeStore.subscribe, appThemeStore.version);
-  // Keyed on the DRILL LEVEL, so the sort drops instead of carrying a column
-  // index across to an unrelated table.
   const { sort, cycle: cycleSort } = useColumnSort(state?.stack[state.stack.length - 1]);
-  // DISPLAY-ONLY list layout: a list is a CSV row, so it lies across one row unless
-  // switched to one item per line. The value is unchanged either way.
   const [listVertical, setListVertical] = useState(false);
+  const [sourceMode, setSourceMode] = useState(false);
 
-  // A return from a drilled level scrolls its origin cell into view and flashes it.
   const gridRef = useRef<HTMLDivElement>(null);
   const focus = state?.stack[state.stack.length - 1]?.focus;
   useEffect(() => {
@@ -151,16 +139,10 @@ export function CubePopup() {
 
   if (!state) return null;
   const view = state.stack[state.stack.length - 1];
-  const { headers, rows, cols, depth, cell, sortKey } = describe(view, listVertical);
-  // A list across a row has nothing to sort by column.
+  const { headers, rows, cols, depth, cell, sortKey } = describe(view, listVertical, sourceMode);
   const sortable = !(view.kind === "list" && !listVertical);
-  // Cap rendered rows — a large nested frame would otherwise put the whole table
-  // in the DOM and kill the renderer.
   const MAX_VISIBLE_ROWS = 1000;
   const rowsTruncated = rows > MAX_VISIBLE_ROWS;
-  // Visual-only sort over EVERY row: `cell()` is handed the SOURCE row index, so
-  // drilling still lands on the right nested value; the render shows the first
-  // MAX_VISIBLE_ROWS of the order, Copy emits all of it.
   const sortOrder = sortedOrder(rows, sort, sortKey);
   const visibleOrder = rowsTruncated ? sortOrder.slice(0, MAX_VISIBLE_ROWS) : sortOrder;
 
@@ -171,7 +153,6 @@ export function CubePopup() {
     <PopupShell
       title={view.label}
       onClose={() => cubePopup.close()}
-      // Esc pops one drill level; at the root it closes.
       onEscape={() => {
         if (state.stack.length > 1) cubePopup.backTo(state.stack.length - 2);
         else cubePopup.close();
@@ -254,8 +235,8 @@ export function CubePopup() {
                   <td key={c} className="table-popup__cell" data-r={r} data-c={c} style={{ padding: "2px 6px", textAlign: "left" }}>
                     {editView && state.edit
                       ? (editView.kind === "list"
-                          ? <ListEditCell edit={state.edit} path={editView.path!} row={listVertical ? r : c} />
-                          : <CubeEditCell edit={state.edit} path={editView.path!} row={r} column={headers?.[c] ?? String(c)} />)
+                          ? <ListEditCell edit={state.edit} path={editView.path!} row={listVertical ? r : c} source={sourceMode} />
+                          : <CubeEditCell edit={state.edit} path={editView.path!} row={r} column={headers?.[c] ?? String(c)} source={sourceMode} />)
                       : cell(r, c)}
                   </td>
                 ))}
@@ -269,8 +250,17 @@ export function CubePopup() {
         {view.kind === "list" && (
           <div className="table-popup__view" role="group" aria-label="List layout">
             <button type="button" aria-pressed={!listVertical} onClick={() => setListVertical(false)} title="Show the list across a row">Row</button>
-            <button type="button" aria-pressed={listVertical} onClick={() => setListVertical(true)} title="Show the list down a column — one value per line (display only, the value is unchanged)">Column</button>
+            <button type="button" aria-pressed={listVertical} onClick={() => setListVertical(true)} title="Show the list down a column. Display only; the value doesn't change.">Column</button>
           </div>
+        )}
+        {(editView || view.kind === "list") && (
+          <label
+            className="table-popup__source-check"
+            title={editView ? "Show and edit exactly what you typed, instead of each column's typed reading." : "Show the source text instead of the formatted value."}
+          >
+            <input type="checkbox" checked={sourceMode} onChange={(e) => setSourceMode(e.target.checked)} />
+            Source
+          </label>
         )}
         {editView && state.edit && <CubeEditRows edit={state.edit} view={editView} />}
         <div className="table-popup__spacer" />
