@@ -69,7 +69,7 @@ orders:
 {% endfor %}
 ```
 
-A bare `{{ name }}` on a List, Matrix, Frame or Cube property is that property's chip, and it opens the same editor as the properties panel. Any other use of the name reads the data. Live Preview shows the template, with those chips in place. A tag with no matching property stays as typed, and a template error leaves the note as written, with the error at the top.
+A bare `{{ name }}` on a List, Matrix, Frame or Cube property is that property's chip, and it opens the same editor as the properties panel. Any other use of the name reads the data. Live Preview renders it too, one tag or block at a time, and shows a piece's source when the cursor enters it. A tag with no matching property stays as typed, and a template error leaves the note as written, with the error at the top.
 
 ## Disclosures
 
