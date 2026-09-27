@@ -4,6 +4,7 @@ import { numberSocket, listSocket, numListSocket, tableSocket, strTableSocket, d
 import { resolveColor, paletteStore, type PaletteSlot } from "../palette";
 import { type SolError } from "../errorValue";
 import { cellShortCircuit, guardFinite, COMPUTE } from "../valueKinds";
+import { applyRole, type InputRole } from "../inputRoles";
 import { type UnitCell, isUnitCell, magnitudeOf, tagDim, tagRatio } from "../unitValue";
 import { dimOf } from "../unitValue";
 
@@ -110,6 +111,21 @@ export function keepInputLast(node: ClassicPreset.Node, key: string): void {
 
 export function readInput<T>(wired: readonly T[] | undefined, literal: T): T | null {
   return wired === undefined || wired.length === 0 ? literal : (wired[0] ?? null);
+}
+
+/** A declared input read by its role ([[D86]] blankRoles): unwired, the typed value; wired, the cable's; a blank as the role reads it. */
+export function readRole<T = unknown>(node: ClassicPreset.Node, key: string, wired: readonly unknown[] | undefined): T {
+  const role = (node.constructor as { inputRoles?: Record<string, InputRole> }).inputRoles?.[key];
+  if (!role) throw new Error(`${node.constructor.name}: no input role declared for "${key}"`);
+  return readAsRole<T>(node, key, wired, role);
+}
+
+/** `readRole` with the role given, for a card whose roles change with its op (Series). */
+export function readAsRole<T = unknown>(node: ClassicPreset.Node, key: string, wired: readonly unknown[] | undefined, role: InputRole): T {
+  const n = node as { literals?: Record<string, unknown>; stringLiterals?: Record<string, unknown> };
+  const literal = n.literals?.[key] ?? n.stringLiterals?.[key];
+  const v = wired === undefined || wired.length === 0 ? literal : wired[0];
+  return applyRole(role, v ?? null, node.inputs[key]?.label ?? key) as T;
 }
 
 export type CellResult<T> = T | (T | SolError | null)[] | SolError | null;

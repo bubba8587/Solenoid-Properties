@@ -48,6 +48,29 @@ orders:
 
 **Note on existing bug:** A Frame's per-column types are stored in the plugin's `data.json` for better YAML parseability and these are not currently forwarded to the main app, which may guess the data type incorrectly. This will be fixed in the next bugfix release.
 
+## Knap notes
+
+Add `knap: true` to a note's properties and Reading view renders its body as a [Knap](https://knap.md) template, filled from the note's own properties:
+
+```markdown
+---
+knap: true
+qty: 3
+orders:
+  - item: Widget
+    due: 2026-10-01
+  - item: Gasket
+    due: 2026-10-04
+---
+{{ qty }} of each, in {{ orders | length }} orders: {{ orders }}
+
+{% for o in orders %}
+- {{ o.item }}, due {{ o.due | date:"D MMM" }}
+{% endfor %}
+```
+
+A bare `{{ name }}` on a List, Matrix, Frame or Cube property is that property's chip, and it opens the same editor as the properties panel. Any other use of the name reads the data. Live Preview shows the template, with those chips in place. A tag with no matching property stays as typed, and a template error leaves the note as written, with the error at the top.
+
 ## Disclosures
 
 - **Clipboard:** the pop-up editor's Copy, Copy as Markdown and copy-cell actions write to the system clipboard when you use them. The plugin never reads the clipboard.
