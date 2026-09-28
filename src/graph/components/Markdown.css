@@ -1,0 +1,184 @@
+.sol-md {
+  max-width: 760px;
+  margin: 0 auto;
+  color: var(--text);
+  font-size: 13.5px;
+  line-height: 1.6;
+  /* A run with no break opportunity (a URL, a hash) wraps mid-run rather than widening the column. */
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.sol-md pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+.sol-md h1 { font-size: 22px; font-weight: 700; margin: 4px 0 14px; color: var(--text-bright); text-wrap-style: balance; }
+.sol-md h2 {
+  font-size: 16px; font-weight: 600; margin: 26px 0 8px; padding-bottom: 5px;
+  color: var(--text-bright); border-bottom: 1px solid var(--border);
+  text-wrap-style: balance;
+}
+.sol-md h3 { font-size: 14px; font-weight: 600; margin: 18px 0 6px; color: var(--text); text-wrap-style: balance; }
+.sol-md p { margin: 8px 0; text-wrap-style: pretty; }
+.sol-md ul, .sol-md ol { margin: 8px 0; padding-left: 22px; }
+.sol-md li { margin: 3px 0; text-wrap-style: pretty; }
+.sol-md li > ul, .sol-md li > ol { margin: 3px 0; }
+.sol-md a { color: var(--accent); text-decoration: none; }
+.sol-md a:hover { text-decoration: underline; }
+.sol-md strong { color: var(--text-bright); font-weight: 600; }
+/* A wikilink has a dotted underline to tell it from a URL, and a tag is a chip; both take the note's color (--note-color, else the app accent) at the --mix-ink rung. */
+.sol-md .sol-md__wikilink { color: color-mix(in srgb, var(--note-color, var(--accent)) var(--mix-ink), var(--text)); text-decoration: underline dotted; text-underline-offset: 3px; cursor: default; }
+.sol-md .sol-md__wikilink--embed::before { content: "⤵ "; opacity: 0.6; }
+.sol-md .sol-md__hl {
+  background: color-mix(in srgb, var(--note-color, var(--accent)) 24%, transparent);
+  color: inherit;
+  border-radius: 3px;
+  padding: 0 3px;
+}
+/* A tinted box, never a stripe (Quiet Accent); the danger kinds take the error ink. */
+.sol-md .sol-md__callout {
+  --callout-ink: var(--note-color, var(--accent));
+  margin: 10px 0;
+  padding: 6px 10px;
+  border: 1px solid color-mix(in srgb, var(--callout-ink) var(--mix-hairline), var(--border));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--callout-ink) 12%, transparent);
+}
+.sol-md .sol-md__callout--danger { --callout-ink: var(--sol-error, #e0473a); }
+.sol-md .sol-md__callout-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  color: color-mix(in srgb, var(--callout-ink) var(--mix-ink), var(--text));
+}
+.sol-md .sol-md__callout-icon { flex: 0 0 auto; }
+.sol-md .sol-md__callout-body > :first-child { margin-top: 6px; }
+.sol-md .sol-md__callout-body > :last-child { margin-bottom: 0; }
+/* Before the KaTeX chunk lands, and on a TeX error, the source shows verbatim in mono. */
+.sol-md .sol-md__math-row { text-align: center; margin: 10px 0; overflow-x: auto; }
+.sol-md .sol-md__math--pending, .sol-md .sol-md__math--error { font-family: var(--font-mono); color: var(--text-dim); }
+.sol-md .sol-md__math--error { color: var(--sol-error, #e0473a); }
+.sol-md .sol-md__tag {
+  display: inline-block;
+  border-radius: 5px;
+  font-size: 0.85em;
+  line-height: 1.5;
+  color: color-mix(in srgb, var(--note-color, var(--accent)) var(--mix-ink), var(--text));
+  /* Opaque: the note's background is a wash of the same hue, so a tinted wash would vanish into it. */
+  background: var(--surface-sunken);
+  border: 1px solid color-mix(in srgb, var(--note-color, var(--accent)) 40%, transparent);
+  padding: 0 6px;
+  white-space: nowrap;
+}
+.sol-md code {
+  font-family: var(--font-mono); font-size: 12px;
+  padding: 1px 5px; border-radius: 4px;
+  background: var(--surface-sunken); border: 1px solid var(--border);
+  color: var(--text-bright);
+}
+.sol-md pre {
+  margin: 10px 0; padding: 10px 12px; overflow: auto;
+  background: var(--surface-sunken); border: 1px solid var(--border); border-radius: 6px;
+  text-wrap-style: auto;
+}
+.sol-md pre code { padding: 0; border: none; background: none; }
+.sol-md blockquote {
+  margin: 10px 0; padding: 2px 12px;
+  border-left: 3px solid var(--border-strong); color: var(--text-dim);
+  text-wrap-style: pretty;
+}
+.sol-md hr { border: none; border-top: 1px solid var(--border); margin: 20px 0; }
+.sol-md kbd {
+  font-family: var(--font-mono); font-size: 11px;
+  padding: 1px 5px; border-radius: 4px;
+  background: var(--surface-sunken); border: 1px solid var(--border-strong);
+}
+.sol-md table { border-collapse: collapse; margin: 10px 0; }
+.sol-md th, .sol-md td { border: 1px solid var(--border); padding: 4px 9px; text-align: left; }
+.sol-md th { background: var(--surface-sunken); font-weight: 600; }
+
+/* Plain text in the Value face, no pill: a box mid-sentence would read as a hero-metric chip (DESIGN.md §3); shared by the Note card and the Report. */
+.solenoid-ref-inline {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-weight: 600;
+  color: var(--text-bright);
+}
+.solenoid-ref-inline--error {
+  color: var(--sol-error);
+}
+/* The `=name!` flag is opt-in emphasis (Obsidian's ==mark==), so it clears the no-decoration rule above. */
+.solenoid-ref-inline--hl {
+  background: color-mix(in srgb, var(--accent) 24%, transparent);
+  border-radius: 3px;
+  padding: 0 3px;
+}
+/* Regular weight, so a long lambda body reads as code, not a bolded metric. */
+.solenoid-ref-inline--mono {
+  font-weight: 500;
+}
+.solenoid-ref-inline--empty {
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+/* A wired chart ref renders as a block figure where its `=name` span sits. */
+.solenoid-ref-figure {
+  display: block;
+  margin: 12px 0;
+}
+.solenoid-ref-figure__title {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+.solenoid-ref-formula { display: block; margin: 12px 0; overflow-x: auto; }
+
+/* Span-based, since it is portaled into an inline `=name` slot, but laid out as a block. */
+.solenoid-ref-embed { display: block; margin: 12px 0; }
+.solenoid-ref-embed__bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 3px 6px;
+  background: var(--surface-sunken);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--text-dim);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+}
+.solenoid-ref-embed__bar:hover { color: var(--text-bright); border-color: var(--border-strong); }
+/* The node header's chevron glyph (nodeCard.css), so an embed's collapse control matches a card's. */
+.solenoid-ref-embed__chev {
+  display: block;
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  background: currentColor;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'%3E%3Cpath d='M3 1l4 4-4 4' fill='none' stroke='%23000' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / 8px 8px no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'%3E%3Cpath d='M3 1l4 4-4 4' fill='none' stroke='%23000' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / 8px 8px no-repeat;
+  transition: transform 0.12s ease;
+}
+.solenoid-ref-embed__chev--open { transform: rotate(90deg); }
+.solenoid-ref-embed__title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.solenoid-ref-embed__body { display: block; margin-top: 6px; }
+.solenoid-ref-chartbody { display: block; }
+
+/* Muted, so the "where:" legend doesn't compete with the formula above it. */
+.solenoid-ref-formula-block { display: block; margin: 12px 0; }
+.solenoid-ref-formula-block .solenoid-ref-formula { margin: 0 0 6px 0; }
+.solenoid-ref-where {
+  display: block;
+  font-size: 0.85em;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+.solenoid-ref-where__lead {
+  font-style: italic;
+  margin-right: 6px;
+}
+.solenoid-ref-where__item { display: block; margin-left: 14px; }
+.solenoid-ref-where__item em { font-style: normal; color: var(--text); }

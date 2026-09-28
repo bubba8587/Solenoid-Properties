@@ -2,7 +2,7 @@
 import { neutralizeFormulaCell, csvField as csvText } from "../csvSafety";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { copyText } from "../clipboard";
-import { tablePopup, type TablePopupState, type Cell as CellValue, type FramePopupColumn } from "../tablePopupStore";
+import { tablePopup, getRecordCardsAction, type TablePopupState, type Cell as CellValue, type FramePopupColumn } from "../tablePopupStore";
 import { appThemeStore } from "../appTheme";
 import { formatScalar } from "./format";
 import { parseCsvRows } from "../csv";
@@ -30,6 +30,7 @@ import { useColumnSort, sortedOrder, sortKeyOf, sortDirOf, SortButton } from "./
 import { ColumnFormatButton, ColumnExprField, COLTYPE_ORDER, COLTYPE_GLYPH, COLTYPE_NAME } from "./columnHeadControls";
 import { CellEditAffix } from "./CellEditAffix";
 import { CsvEditor } from "./CsvEditor";
+import { TableCards } from "./TableCards";
 import { CellSuggest, type CellSuggestHandle } from "./CellSuggest";
 import { parseRecordLayout, recordImageSrc, cellImageSrc } from "../recordLayout";
 import { CellImage } from "./cubeCell";
@@ -117,12 +118,12 @@ export function TablePopup() {
   useSyncExternalStore(appThemeStore.subscribe, appThemeStore.version);
 
   const [grid, setGrid] = useState<string[][]>([]);
-  const { sort, cycle: cycleSort, remap: remapSort, clear: clearSort } = useColumnSort(state);
+  const { sort, cycle: cycleSort, remap: remapSort, clear: clearSort, set: setSort } = useColumnSort(state);
   // Must stay aligned with the grid's columns.
   const [headerNames, setHeaderNames] = useState<string[]>([]);
   const [columnTypes, setColumnTypes] = useState<CellType[]>([]);
   // CSV keeps its own text buffer, so typing mid-edit isn't reshaped by cell coercion.
-  const [view, setView] = useState<"grid" | "csv" | "form">("grid");
+  const [view, setView] = useState<"grid" | "csv" | "form" | "cards">("grid");
   const [csvText, setCsvText] = useState("");
   const [csvError, setCsvError] = useState<string | null>(null);
   const [displayMode, setDisplayMode] = useState<"formatted" | "source">("formatted");
@@ -148,6 +149,7 @@ export function TablePopup() {
   const initedFor = useRef<TablePopupState | null>(null);
   const summaryCache = useRef<{ deps: unknown[]; value: ColSummary[] | null }>({ deps: [], value: null });
   const csvTypesFrom = useRef<number | null>(null);
+  const cardsKey = useRef<{ deps: unknown[]; key: object }>({ deps: [], key: {} });
 
   useEffect(() => {
     if (!state) { initedFor.current = null; return; }
@@ -545,6 +547,10 @@ export function TablePopup() {
   }
   const colSummaries = summaryCache.current.value;
 
+  const cardsCapable = isFramePopup && !state.list;
+  const cardsDeps = [state, grid, columnTypes, headerNames, computedVals, colExprs, displayMode, colFmt, colLocal];
+  if (!sameDeps(cardsKey.current.deps, cardsDeps)) cardsKey.current = { deps: cardsDeps, key: {} };
+
   const headers = editableHeaders ? headerNames : state.headers;
   const hasHeaderLine = !state.list && !!(headers && headers.length);
   function buildText(inSortOrder: boolean, as: "auto" | "shown" | "source" = "auto"): string {
@@ -570,7 +576,7 @@ export function TablePopup() {
   }
   const settledColumnTypes = (): CellType[] =>
     view === "csv" && csvTypesFrom.current !== null ? columnTypesAfterCsvEdit(columnTypes, csvTypesFrom.current, grid) : columnTypes;
-  function leaveCsv(next: "grid" | "form") {
+  function leaveCsv(next: "grid" | "form" | "cards") {
     if (view === "csv") setColumnTypes(settledColumnTypes());
     setView(next);
   }
@@ -633,6 +639,12 @@ export function TablePopup() {
     if (!refresh) return;
     setLiveComputed(refresh.computedCells);
     setColumnTypes(refresh.columnTypes);
+  }
+  // The new node reads what the host outputs, so an editor's pending edits are saved first.
+  const recordCards = getRecordCardsAction();
+  function addCardsChart(hostId: string) {
+    if (editable) save(); else tablePopup.close();
+    void recordCards?.add(hostId);
   }
   function save() {
     if (state?.onSaveRaw) state.onSaveRaw(grid.map((row) => [...row]));
@@ -705,6 +717,7 @@ export function TablePopup() {
             { label: "Export CSV…", onClick: exportCsv },
             ...(isFramePopup ? [{ label: showSummary ? "Hide summary footer" : "Show summary footer", onClick: () => settingsStore.set("tablePopupSummary", !showSummary) }] : []),
             ...(view === "grid" ? [{ label: frozen ? "Unfreeze header" : "Freeze header", onClick: () => settingsStore.set("tablePopupFrozen", !frozen) }] : []),
+            ...(cardsCapable && state.pinNodeId && recordCards?.canAdd(state.pinNodeId) ? [{ label: "Add Record: Cards", onClick: () => addCardsChart(state.pinNodeId!) }] : []),
           ]}
         />
       }
@@ -782,7 +795,12 @@ export function TablePopup() {
                         value={colExprs[c] ?? ""}
                         lambdaOptions={state.lambdaOptions ?? []}
                         onDraft={(v) => setColExprs((prev) => { const next = [...prev]; next[c] = v; return next; })}
-                        onCommit={() => { if (colExprs[c] !== committedExprs.current[c]) void commitLive(); }}
+                        onCommit={(text) => {
+                          if (text === committedExprs.current[c]) return;
+                          const exprs = [...colExprs];
+                          exprs[c] = text;
+                          void commitLive({ exprs });
+                        }}
                         onRevert={() => {
                           const prev = committedExprs.current[c];
                           setColExprs((xs) => { const next = [...xs]; next[c] = prev; return next; });
@@ -1052,6 +1070,21 @@ export function TablePopup() {
             })()}
           </div>
         </div>
+      ) : view === "cards" ? (
+        <TableCards
+          names={Array.from({ length: cols }, (_, c) => (headers?.[c] ?? "").trim() || colLabel(c))}
+          types={Array.from({ length: cols }, (_, c) => colTypeAt(c))}
+          computed={computedColSet}
+          chipCols={new Set(Array.from({ length: cols }, (_, c) => c).filter((c) => colTypeAt(c) === "string" && !!annFor(c).chip))}
+          rowCount={rows}
+          order={sortOrder}
+          rawAt={rawAt}
+          shownRow={(r) => displayRowAt(r, displayMode === "source" ? "source" : "shown")}
+          dataKey={cardsKey.current.key}
+          sort={sort}
+          onSort={setSort}
+          onEdit={formCapable ? (r) => { setFormRow(r); setView("form"); } : undefined}
+        />
       ) : (
         <CsvEditor
           value={csvText}
@@ -1072,6 +1105,13 @@ export function TablePopup() {
             aria-pressed={view === "grid"}
             onClick={() => leaveCsv("grid")}
           >Grid</button>
+          {cardsCapable && (
+            <button
+              type="button"
+              aria-pressed={view === "cards"}
+              onClick={() => leaveCsv("cards")}
+            >Cards</button>
+          )}
           {formCapable && (
             <button
               type="button"
