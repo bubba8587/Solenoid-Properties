@@ -1,8 +1,8 @@
 // [[C114]] cardsView
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { planCards, cardMatches, PROFILE_ROWS, type CardColType, type CardColumnInput } from "../cardLayout";
 import { type ColumnSort, type SortDir } from "./columnSort";
-import { ArrowIcon, InfoIcon, SearchIcon } from "./Icons";
+import { ArrowIcon, InfoIcon } from "./Icons";
 import { Markdown } from "./Markdown";
 import { helpSection } from "../helpSection";
 import helpMd from "../help/help.md?raw";
@@ -14,24 +14,32 @@ const CARD_RULES = helpSection(helpMd, "Cards");
 
 /** `dataKey` changes whenever the cells or their shown text do; the plan, the chip colors and the row texts are cached on it. */
 export function TableCards({
-  names, types, computed, chipCols, rowCount, order, rawAt, shownRow, dataKey, sort, onSort, onEdit,
+  names, types, computed, chipCols, nestedCols, listCols, rowCount, order, rawAt, shownRow, itemsAt, cellNodeAt, dataKey, sort, onSort, query, onEdit,
 }: {
   names: readonly string[];
   types: readonly CardColType[];
   computed: ReadonlySet<number>;
   chipCols: ReadonlySet<number>;
+  /** Columns of nested containers, and of lists among them (the Cube popup's). */
+  nestedCols?: ReadonlySet<number>;
+  listCols?: ReadonlySet<number>;
   rowCount: number;
   /** Source row indices in the visual sort. */
   order: readonly number[];
   rawAt: (r: number, c: number) => string;
   shownRow: (r: number) => string[];
+  itemsAt?: (r: number, c: number) => readonly string[] | null;
+  cellNodeAt?: (r: number, c: number) => ReactNode;
   dataKey: object;
   sort: ColumnSort;
   onSort: (next: ColumnSort) => void;
+  /** The popup's word filter, typed in its header and shared with the Grid view. */
+  query: string;
   onEdit?: (r: number) => void;
 }) {
-  const [query, setQuery] = useState("");
   const [limit, setLimit] = useState(PAGE);
+  const [seenQuery, setSeenQuery] = useState(query);
+  if (query !== seenQuery) { setSeenQuery(query); setLimit(PAGE); }
   const [open, setOpen] = useState<ReadonlySet<number>>(() => new Set());
   const [rulesOpen, setRulesOpen] = useState(false);
   const cols = names.length;
@@ -51,11 +59,13 @@ export function TableCards({
       cells: Array.from({ length: n }, (_r, r) => rawAt(r, c)),
       shown: Array.from({ length: n }, (_r, r) => row(r)[c] ?? ""),
       chip: chipCols.has(c),
+      nested: nestedCols?.has(c),
+      lists: listCols?.has(c),
     }));
     return planCards(input);
   }, [dataKey]);
 
-  const chipColors = useMemo(() => cardChipColors(plan, chipCols, rowCount, rawAt), [dataKey, plan]);
+  const chipColors = useMemo(() => cardChipColors(plan, chipCols, rowCount, rawAt, itemsAt), [dataKey, plan]);
 
   const matched = query.trim() === "" ? order : order.filter((r) => cardMatches(row(r), query));
   const shown = matched.length > limit ? matched.slice(0, limit) : matched;
@@ -79,6 +89,8 @@ export function TableCards({
       chipColors={chipColors}
       texts={row(r)}
       raw={(c) => rawAt(r, c)}
+      items={itemsAt ? (c) => itemsAt(r, c) : undefined}
+      cellNode={cellNodeAt ? (c) => cellNodeAt(r, c) : undefined}
       rowNumber={r + 1}
       fold
       open={open.has(r)}
@@ -91,16 +103,6 @@ export function TableCards({
   return (
     <div className="table-cards-wrap sol-popup__scroll">
       <div className="table-cards__bar">
-        <label className="table-cards__filter">
-          <SearchIcon size={12} />
-          <input
-            value={query}
-            placeholder="Filter"
-            aria-label="Filter cards"
-            spellCheck={false}
-            onChange={(e) => { setQuery(e.target.value); setLimit(PAGE); }}
-          />
-        </label>
         <select
           className="table-cards__sort"
           aria-label="Sort cards"
@@ -120,7 +122,6 @@ export function TableCards({
         >
           <ArrowIcon dir={dir === "asc" ? "up" : "down"} size={12} />
         </button>
-        {query.trim() !== "" && <span className="table-cards__count">{matched.length} of {rowCount}</span>}
         <button
           type="button"
           className="table-cards__dir"

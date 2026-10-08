@@ -102,7 +102,7 @@ export function percentile(arr: readonly number[], p: number, exc: boolean): num
 }
 
 export function quartile(arr: readonly number[], q: number, exc: boolean): number | SolError | null {
-  const qi = Math.round(q);
+  const qi = Math.trunc(q);
   if (arr.length === 0) return null;
   if (qi < 0 || qi > 4) return solError("#DOMAIN!", "Quartile must be 0, 1, 2, 3, or 4");
   if (exc && (qi === 0 || qi === 4)) return solError("#DOMAIN!", "QUARTILE.EXC is undefined for quartile 0 or 4");
@@ -113,11 +113,15 @@ export function quartile(arr: readonly number[], q: number, exc: boolean): numbe
   return guardFinite(percentileOf([...arr].sort((a, b) => a - b), p, exc), arr);
 }
 
-export function nthExtreme(arr: readonly number[], k: number, largest: boolean): number | null {
-  const ki = Math.round(k);
-  if (arr.length === 0 || ki < 1 || ki > arr.length) return null;
+/** A fractional k counts as Excel does (checked in Excel): its position in ascending order is truncated, so SMALL's
+ *  k = 2.5 is the 2nd smallest and LARGE's is the 3rd largest. */
+export function nthExtreme(arr: readonly number[], k: number, largest: boolean): number | SolError | null {
+  if (Number.isNaN(k)) return solError("#VALUE!", "k must be a number");
+  if (k < 1) return solError("#DOMAIN!", "k starts at 1, the largest or smallest value");
+  const n = arr.length;
+  if (n === 0 || k > n) return null;
   const sorted = [...arr].sort((a, b) => a - b);
-  return largest ? sorted[arr.length - ki] : sorted[ki - 1];
+  return sorted[Math.floor(largest ? n - k + 1 : k) - 1];
 }
 
 export function pearson(xs: readonly number[], ys: readonly number[], rsq = false): number | SolError | null {
@@ -178,11 +182,16 @@ export function covariance(xs: readonly number[], ys: readonly number[], sample:
   return guardFinite(sample ? cov / (n - 1) : cov / n, xs.concat(ys));
 }
 
-export function modes(arr: readonly number[]): number | number[] | null {
+/** Excel's MODE: with no value appearing twice there is no mode. */
+export const noMode = (): SolError => solError("#N/A", "No value repeats, so there is no mode");
+
+export function modes(arr: readonly number[]): number | number[] | SolError | null {
   if (arr.length === 0) return null;
+  if (arr.some((v) => Number.isNaN(v))) return guardFinite(NaN, arr);
   const counts = new Map<number, number>();
   for (const v of arr) counts.set(v, (counts.get(v) ?? 0) + 1);
   const maxCount = iterMax(counts.values());
+  if (maxCount < 2) return noMode();
   const ms = [...counts.entries()].filter(([, c]) => c === maxCount).map(([v]) => v).sort((a, b) => a - b);
   return ms.length === 1 ? ms[0] : ms;
 }
@@ -192,11 +201,13 @@ export function fisher(x: number, inverse: boolean): number | SolError {
   return x <= -1 || x >= 1 ? solError("#DOMAIN!", "FISHER requires −1 < x < 1") : Math.atanh(x);
 }
 
-export function modeSingle(arr: readonly number[]): number | null {
+export function modeSingle(arr: readonly number[]): number | SolError | null {
   if (arr.length === 0) return null;
+  if (arr.some((v) => Number.isNaN(v))) return guardFinite(NaN, arr);
   const counts = new Map<number, number>();
   for (const v of arr) counts.set(v, (counts.get(v) ?? 0) + 1);
   const maxCount = iterMax(counts.values());
+  if (maxCount < 2) return noMode();
   for (const v of arr) if (counts.get(v) === maxCount) return v;
   return null;
 }

@@ -8,12 +8,13 @@ import { solError, isSolError, type SolError } from "./errorValue";
  * `picks`: positions; a blank pick is dropped, none left is the picks left out (`#SYNTAX!` when `required`).
  */
 export type InputRole =
-  | { kind: "setting"; blank: unknown }
+  | { kind: "setting"; blank: unknown; word?: string; from?: readonly [string, number] }
   | { kind: "required" }
   | { kind: "picks"; required: boolean };
 
 export const LEFT_OUT = undefined;
-export const setting = (blank: unknown): InputRole => ({ kind: "setting", blank });
+/** `word`: what an empty field shows for a `LEFT_OUT` default ([[D96]] emptySlotShowsItsValue). */
+export const setting = (blank: unknown, word?: string): InputRole => ({ kind: "setting", blank, ...(word ? { word } : {}) });
 export const required: InputRole = { kind: "required" };
 export const picks = (opts: { required?: boolean } = {}): InputRole => ({ kind: "picks", required: opts.required ?? false });
 
@@ -39,9 +40,10 @@ export const ARG_ROLES: Record<string, ArgRoles> = {
   SORTBY: Object.fromEntries(Array.from({ length: 127 }, (_, k) => [2 + 2 * k, setting(LEFT_OUT)])),
   UNIQUE: { 1: setting(LEFT_OUT), 2: setting(LEFT_OUT) },
   VDB: { 5: setting(LEFT_OUT), 6: setting(false) },
+  INTERPOLATE: { 1: setting(LEFT_OUT), 2: setting(LEFT_OUT) },
   TREND: { 3: setting(LEFT_OUT) },
   GROWTH: { 3: setting(LEFT_OUT) },
-  TEXTSPLIT: { 1: required, 2: setting(LEFT_OUT), 3: setting(false), 4: setting(0), 5: setting(LEFT_OUT) },
+  TEXTSPLIT: { 1: setting(LEFT_OUT), 2: setting(LEFT_OUT), 3: setting(false), 4: setting(0), 5: setting(LEFT_OUT) },
   TEXTAFTER: { 2: setting(LEFT_OUT), 3: setting(0), 4: setting(0), 5: setting(LEFT_OUT) },
   TEXTBEFORE: { 2: setting(LEFT_OUT), 3: setting(0), 4: setting(0), 5: setting(LEFT_OUT) },
   // The settings sweep ([[D86]] blankRoles): optional settings read a blank as left out, required ones as Excel's
@@ -208,9 +210,15 @@ export function argRole(name: string, i: number): InputRole | undefined {
   const roles = ARG_ROLES[name];
   if (!roles) return undefined;
   if (roles[i]) return roles[i];
-  const top = Math.max(...Object.keys(roles).filter((k) => k !== "rest").map(Number));
+  if (!roles.rest) return undefined;
+  let top = lastPositional.get(name);
+  if (top === undefined) {
+    top = Math.max(...Object.keys(roles).filter((k) => k !== "rest").map(Number));
+    lastPositional.set(name, top);
+  }
   return i > top ? roles.rest : undefined;
 }
+const lastPositional = new Map<string, number>();
 
 /** A card's sockets, each named for the formula argument it is: `rolesFrom("TAKE", { rows: 1, cols: 2 })`. */
 export function rolesFrom(name: string, sockets: Record<string, number>): Record<string, InputRole> {
@@ -218,7 +226,7 @@ export function rolesFrom(name: string, sockets: Record<string, number>): Record
   for (const [key, i] of Object.entries(sockets)) {
     const role = argRole(name, i);
     if (!role) throw new Error(`rolesFrom: ${name} declares no role for argument ${i}`);
-    out[key] = role;
+    out[key] = role.kind === "setting" ? { ...role, from: [name, i] } : role;
   }
   return out;
 }
@@ -255,9 +263,9 @@ export function applyRole(role: InputRole, v: unknown, label: string): unknown {
  * A formula's arguments read by their roles. `settled[i]` marks a slot the null rule must not blank the answer on:
  * a slot left empty, or one with a role. A variadic `required` picks group errors only when every one is left out.
  */
-export function applyArgRoles(name: string, emptySlots: readonly boolean[], argv: unknown[]): { argv: unknown[]; settled: boolean[] } {
+export function applyArgRoles(name: string, emptySlots: readonly boolean[], argv: unknown[]): { argv: unknown[]; settled: readonly boolean[] } {
+  if (!ARG_ROLES[name]) return { argv, settled: emptySlots };
   const settled = [...emptySlots];
-  if (!ARG_ROLES[name]) return { argv, settled };
   const label = (i: number) => `${name}: argument ${i + 1}`;
   const out = argv.map((v, i) => {
     const role = argRole(name, i);

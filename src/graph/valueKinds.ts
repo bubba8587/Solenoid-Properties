@@ -19,17 +19,29 @@ export function numberToLogical(n: number): boolean {
   return n !== 0;
 }
 
-export function coerceLogical(v: unknown): boolean | null {
+/** A value read as a logical ([[D93]] oneTextReading, [[B17]] typedValueModel): a boolean as itself, a finite number or
+ *  numeric text as true when non-zero, and other text only as `true` or `false` in any case. Blank is null; anything
+ *  else is NaN: a cell shows it, and a computation turns it into `#TYPE!` (`logicalOrTypeError`). */
+export function coerceLogical(v: unknown): boolean | null | number {
+  if (v === null || v === undefined) return null;
   if (typeof v === "boolean") return v;
-  if (typeof v === "number") return Number.isFinite(v) ? numberToLogical(v) : null;
+  if (typeof v === "number") return Number.isFinite(v) ? numberToLogical(v) : NaN;
   if (typeof v === "string") {
     const t = v.trim().toLowerCase();
+    if (t === "") return null;
     if (t === "true") return true;
     if (t === "false") return false;
     const n = decimalFromText(t);
-    return Number.isFinite(n) ? numberToLogical(n) : null;
+    if (Number.isFinite(n)) return numberToLogical(n);
   }
-  return null;
+  return NaN;
+}
+
+/** `coerceLogical` for a computation: what can't read as a logical is `#TYPE!`, naming the value. */
+export function logicalOrTypeError(v: unknown, where: string): boolean | null | SolError {
+  const b = coerceLogical(v);
+  if (typeof b !== "number") return b;
+  return solError("#TYPE!", `${where}: ${typeof v === "string" ? `"${v}"` : String(v)} isn't a logical. Only TRUE, FALSE or a number read as one`);
 }
 
 /** IF's and IFS's reading of a condition, Excel's: text counts only as TRUE or FALSE in any case, and anything else unreadable is `#VALUE!`. */

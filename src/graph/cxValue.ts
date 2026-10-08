@@ -1,6 +1,7 @@
 // [[C17]] shareImpl, [[C24]] arraySemantics
 
 import { solError, type SolError } from "./errorValue";
+import { formatScalar as displayNumber } from "./components/format";
 
 export interface Cx { readonly __cx: true; readonly re: number; readonly im: number }
 
@@ -33,8 +34,9 @@ export function formatCx(z: Cx, digits = 4): string {
   return assembleCx(z, cxNumFmt(digits)).text;
 }
 
-export function formatCxDisplay(z: Cx, digits = 4): string {
-  return assembleCx(z, cxNumFmt(digits), true).text;
+/** On screen each part reads as any unformatted number does ([[D94]] oneNumberDisplay). */
+export function formatCxDisplay(z: Cx): string {
+  return assembleCx(z, displayNumber, true).text;
 }
 
 export function parseCx(text: string): Cx | null {
@@ -48,6 +50,16 @@ export function parseCx(text: string): Cx | null {
   m = s.match(new RegExp(`^[+-]?${NUM}$`));
   if (m) return cx(Number(s), 0);
   return null;
+}
+
+/** One reading of a complex operand for the formula and the card: a real number is z + 0i, text is parsed as "a+bi", anything else is #TYPE!. */
+export function toCx(v: unknown, name: string): Cx | SolError {
+  if (isCx(v)) return v;
+  if (typeof v === "number") return cx(v, 0);
+  if (typeof v === "string") {
+    return parseCx(v) ?? solError("#VALUE!", `${name}: "${v}" is not a complex number. Write it as "a+bi"`);
+  }
+  return solError("#TYPE!", `${name} expects a complex number`);
 }
 
 export function cxAdd(a: Cx, b: Cx): Cx { return cx(a.re+b.re, a.im+b.im); }

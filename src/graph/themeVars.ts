@@ -1,5 +1,5 @@
-// [[C62]] paletteAllOrNone
-import { hexToRgba, contrastInk, themeAccent, resolveColor, paletteStore, SOCKET_VARS, socketArrayShade, socketMatrixShade, socketRingShade, chromeCssVars, adaptChrome, CHROME_VARS, DERIVED_CHROME_VARS } from "./palette";
+// [[B14]] oneDesignSystem
+import { hexToRgba, contrastInk, themeAccent, resolveColor, resolveAccent, paletteStore, SOCKET_VARS, socketArrayShade, socketMatrixShade, socketRingShade, chromeCssVars, adaptChrome, CHROME_VARS, DERIVED_CHROME_VARS } from "./palette";
 
 export type ThemeMode = "dark" | "light";
 
@@ -8,7 +8,7 @@ const ALL_CHROME_VARS: string[] = [...CHROME_VARS.map((v) => v.var), ...DERIVED_
 /** `null` means remove that property. */
 export function themeVars(accentSlot: string, mode: ThemeMode): Record<string, string | null> {
   const vars: Record<string, string | null> = {};
-  const hex = resolveColor(accentSlot);
+  const hex = resolveAccent(accentSlot);
   vars["--accent"] = hex;
   vars["--accent-soft"] = hexToRgba(hex, 0.14);
   vars["--accent-mid"] = hexToRgba(hex, 0.4);
@@ -22,6 +22,8 @@ export function themeVars(accentSlot: string, mode: ThemeMode): Record<string, s
   }
 
   vars["--sol-error"] = themeAccent(resolveColor("vermilion"), mode);
+  vars["--sol-ok"] = themeAccent(resolveColor("green"), mode);
+  vars["--sol-warn"] = themeAccent(resolveColor("gold"), mode);
 
   const home = paletteStore.chromeHomeHex();
   const ramp = paletteStore.chrome()[mode];

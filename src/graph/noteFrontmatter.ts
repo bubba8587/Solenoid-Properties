@@ -3,7 +3,6 @@ import { parseDocument, isMap, isSeq, isScalar, isPair, Scalar, type Node, type 
 import { noteDateSerial } from "./nodes/dateSerial";
 import { typeAtRank } from "./sockets";
 import { isComplexText, type ScalarKind } from "./scalarText";
-import { fencedLines } from "./managedBlock";
 
 
 export type FrontmatterFieldType =
@@ -48,8 +47,14 @@ function readScalar(node: Node | null | undefined): { value: FrontmatterScalar; 
   const v = node.value;
   const quoted = node.type === Scalar.QUOTE_DOUBLE || node.type === Scalar.QUOTE_SINGLE;
   if (v === null || v === undefined) return { value: null, kind: "string" };
+  const src = node.type === Scalar.PLAIN ? String(node.source ?? "") : "";
+  if (typeof v === "number" && /^[-+]\.(?!(?:inf|Inf|INF)$)/.test(src)) return { value: src, kind: "string" };
+  if (typeof v === "string" && /^[-+]?0(?:b[01]+|o[0-7]+|x[0-9a-fA-F]+)$/.test(src)) {
+    return { value: (src[0] === "-" ? -1 : 1) * Number(src.replace(/^[-+]/, "")), kind: "number" };
+  }
   if (typeof v === "boolean") return { value: v, kind: "logical" };
-  if (typeof v === "number") return { value: Number.isFinite(v) ? v : null, kind: "number" };
+  // .inf and -.inf are YAML's infinity and stay ∞ ([[D48]] classifyNonFinite); .nan reads blank.
+  if (typeof v === "number") return { value: Number.isNaN(v) ? null : v, kind: "number" };
   if (typeof v === "bigint") return { value: Number(v), kind: "number" };
   const s = String(v);
   const serial = quoted ? null : noteDateSerial(s);
@@ -172,7 +177,7 @@ export function parseNoteFrontmatter(text: string): ParsedFrontmatter {
   const body = lines.slice(close + 1).join("\n").replace(/^\n+/, "");
   const fields: FrontmatterField[] = [];
   const seen = new Set<string>();
-  const src = lines.slice(1, close).join("\n");
+  const src = lines.slice(1, close).map((l) => l.replace(/\r$/, "")).join("\n");
   let doc;
   try {
     doc = parseDocument(src, { uniqueKeys: false, schema: "core" });
@@ -189,38 +194,4 @@ export function parseNoteFrontmatter(text: string): ParsedFrontmatter {
     }
   }
   return { fields, body, hasBlock: true };
-}
-
-export function toggleTaskMarker(body: string, index: number): string {
-  const lines = body.split("\n");
-  let start = 0;
-  if (lines[0]?.trim() === "---") {
-    for (let i = 1; i < lines.length; i++) {
-      if (lines[i].trim() === "---") { start = i + 1; break; }
-    }
-  }
-  const marker = /^(\s*[-*+]\s+)\[([ xX])\](?=\s|$)/;
-  let count = -1;
-  const fenced = fencedLines(lines.slice(start));
-  let prevBlank = true, prevItem = false;
-  for (let i = start; i < lines.length; i++) {
-    const line = lines[i];
-    if (fenced[i - start]) {
-      prevBlank = false; prevItem = false;
-      continue;
-    }
-    const blank = line.trim() === "";
-    const indentedCode: boolean = !blank && /^(?: {4,}|\t)/.test(line) && prevBlank && !prevItem;
-    const m = indentedCode ? null : marker.exec(line);
-    prevBlank = blank;
-    if (!blank) prevItem = indentedCode ? prevItem : /^\s*(?:[-*+]|\d+[.)])\s/.test(line);
-    if (!m) continue;
-    count++;
-    if (count === index) {
-      const checked = m[2].toLowerCase() === "x";
-      lines[i] = m[1] + (checked ? "[ ]" : "[x]") + lines[i].slice(m[0].length);
-      break;
-    }
-  }
-  return lines.join("\n");
 }

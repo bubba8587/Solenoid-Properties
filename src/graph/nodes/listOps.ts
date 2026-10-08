@@ -1,11 +1,12 @@
-// [[C17]], [[C60]], [[C21]] matchNodeLimits (MAX_GENERATED), [[C110]] rangeIncludesStop
+// [[C17]], [[B11]] (MAX_GENERATED), [[C110]] rangeIncludesStop
 import { isSolError, solError, type SolError } from "../errorValue";
 import { isCx } from "../cxValue";
-import { isUnitCell } from "../unitValue";
-import { forAggregate, ifTest, isMissing } from "../valueKinds";
+import { isUnitCell, type UnitCell, forAggregateUnits, isAffineDisplay, tagDim, unitError, READINGS_ADD } from "../unitValue";
+import { dimEqual, dimPow, isDimensionless } from "../dimension";
+import { forAggregate, ifTest, isMissing, DOMAIN_MESSAGE } from "../valueKinds";
 import { compareStrings } from "../stringOrder";
 import { iterMin, iterMax } from "./mathUtils";
-import { percentileOf } from "./statsOps";
+import { percentileOf, noMode } from "./statsOps";
 
 export type Cell = number | null | SolError;
 
@@ -123,7 +124,7 @@ export function combinationsOf(arr: readonly Cell[], k: number, kind: "combinati
   if (kind === "combinations") for (let i = 0; i < kk; i++) count = (count * (n - i)) / (i + 1);
   else for (let i = 0; i < kk; i++) count *= n - i;
   count = Math.round(count);
-  if (count > COMBO_CAP) return solError("#OVERFLOW!", `That makes ${count} ${kind} — over the ${COMBO_CAP} cap. Use a shorter list or a smaller k.`);
+  if (count > COMBO_CAP) return solError("#OVERFLOW!", `That makes ${count} ${kind}, over the ${COMBO_CAP} cap. Use a shorter list or a smaller k.`);
   const out: Cell[][] = [];
   const cur: Cell[] = [];
   if (kind === "combinations") {
@@ -263,7 +264,30 @@ export function polyfitEval(xs: readonly Cell[], ys: readonly Cell[], degree: nu
 
 export type RunningOp = "sum" | "avg" | "min" | "max" | "median" | "product" | "stdev";
 
-export function running(op: RunningOp, arr: readonly Cell[], window: number | null): Cell[] {
+/** A list of one unit runs on its magnitudes and keeps the unit, as Reduce does: a product's power grows with its count,
+ *  and over °C a spread is a delta and two readings have no sum. */
+export function running(op: RunningOp, arr: readonly (Cell | UnitCell)[], window: number | null): (Cell | UnitCell)[] | SolError {
+  if (!arr.some(isUnitCell)) return runningPlain(op, arr as readonly Cell[], window);
+  // An error cell stays in place and runs as it does without units.
+  const prep = forAggregateUnits(arr.filter((v) => !isSolError(v)), op !== "sum");
+  if (prep.error) return prep.error;
+  const affine = isAffineDisplay(prep.display);
+  if (affine && op === "sum" && arr.filter((c) => isUnitCell(c) && isAffineDisplay(c.display)).length > 1) return unitError(READINGS_ADD);
+  let k = 0;
+  const mags: Cell[] = arr.map((v) => (isSolError(v) ? v : isMissing(v) ? null : prep.nums[k++]));
+  const out = runningPlain(op, mags, window);
+  const w = window !== null && Math.round(window) >= 1 ? Math.round(window) : Infinity;
+  const counted = mags.map((v) => (typeof v === "number" && Number.isFinite(v) ? 1 : 0));
+  const display = affine && op === "stdev" ? undefined : prep.display;
+  return out.map((v, i) => {
+    if (typeof v !== "number" || isDimensionless(prep.dim)) return v;
+    const n = counted.slice(Math.max(0, i - w + 1), i + 1).reduce((a: number, b) => a + b, 0);
+    const dim = op === "product" ? dimPow(prep.dim, n) : prep.dim;
+    return tagDim(v, dim, dimEqual(dim, prep.dim) ? display : undefined);
+  });
+}
+
+function runningPlain(op: RunningOp, arr: readonly Cell[], window: number | null): Cell[] {
   if (window !== null && Math.round(window) >= 1) {
     const w = Math.max(1, Math.round(window));
     return arr.map((_, i) => {
@@ -451,6 +475,7 @@ export function arrayCount(n: number, fn: string): number | SolError {
 
 /** RANDARRAY's bounds check, shared by the formula and the card. */
 export function randArrayRange(lo: number, hi: number, whole: boolean): SolError | null {
+  if (Number.isNaN(lo) || Number.isNaN(hi)) return solError("#VALUE!", "RANDARRAY's Min and Max must be numbers");
   if (lo > hi) return solError("#VALUE!", "RANDARRAY's Min is above its Max");
   if (whole && Math.ceil(lo) > Math.floor(hi)) return solError("#VALUE!", "RANDARRAY's Min and Max hold no whole number");
   return null;
@@ -498,10 +523,10 @@ export function fibonacci(count: number): number[] {
 
 // ─── Sets ─────────────────────────────────────────────────────────────────────
 // JavaScript Sets key objects by reference, so a complex value canonicalizes to a string; primitives key as themselves.
-/** Equal values share a key: complex by parts, a unit cell by base-SI magnitude and dimension, so 5 km and 5000 m are one member ([[C25]] firstClassUnits). */
+/** Equal values share a key: complex by parts, a unit cell by base-SI magnitude (15 significant digits) and dimension, so 5 km and 5000 m, or 1.1 h and 3960 s, are one member ([[C25]] firstClassUnits). */
 export function setKey(v: unknown): unknown {
   if (isCx(v)) return `\x00cx:${v.re},${v.im}`;
-  if (isUnitCell(v)) return `\x00u:${v.value}:${Object.keys(v.dim).sort().map((k) => `${k}${v.dim[k]}`).join(",")}`;
+  if (isUnitCell(v)) return `\x00u:${+v.value.toPrecision(15)}:${Object.keys(v.dim).sort().map((k) => `${k}${v.dim[k]}`).join(",")}`;
   return v;
 }
 
@@ -798,6 +823,8 @@ function sortedIndexByKeys(keys: readonly { vals: readonly unknown[]; desc: bool
 export function sortGrid<T>(m: readonly (readonly T[])[], index: number, desc: boolean, byCol: boolean): T[][] | SolError {
   const g = byCol ? transposeGrid(m) : m.map((r) => [...r]);
   const width = g[0]?.length ?? 0;
+  // Nothing to sort is nothing sorted, never a sort_index out of range.
+  if (g.length === 0 || width === 0) return m.map((r) => [...r]);
   if (!(Number.isInteger(index) && index >= 1 && index <= width))
     return solError("#VALUE!", `SORT: sort_index ${index} is outside the ${width} ${byCol ? "rows" : "columns"}`);
   const out = sortedIndexByKeys([{ vals: g.map((r) => r[index - 1]), desc }], g.length).map((i) => g[i]);
@@ -869,6 +896,7 @@ export function uniqueGrid<T>(m: readonly (readonly T[])[], byCol: boolean, exac
 export function modeMult(arr: readonly unknown[]): unknown[] | SolError {
   const err = firstError(arr);
   if (err) return err;
+  if (arr.some((v) => typeof v === "number" && Number.isNaN(v))) return solError("#DOMAIN!", DOMAIN_MESSAGE);
   const counts = new Map<unknown, { v: unknown; n: number }>();
   for (const v of arr) {
     if (isMissing(v)) continue;
@@ -878,7 +906,7 @@ export function modeMult(arr: readonly unknown[]): unknown[] | SolError {
   }
   let best = 0;
   for (const e of counts.values()) best = Math.max(best, e.n);
-  if (best < 2) return [];
+  if (best < 2) return noMode();
   return [...counts.values()].filter((e) => e.n === best).map((e) => e.v);
 }
 
@@ -991,7 +1019,10 @@ function fftInPlace(re: number[], im: number[], inverse: boolean): void {
 }
 
 export interface SpectrumRow { bin: number; frequency: number; magnitude: number; phase: number }
-export function spectrum(x: readonly Cell[], rate = 1): SpectrumRow[] {
+export function spectrum(x: readonly Cell[], rate: number | SolError = 1): SpectrumRow[] | SolError {
+  if (isSolError(rate)) return rate;
+  const err = firstError(x);
+  if (err) return err;
   const sig = x.map((v) => (typeof v === "number" && Number.isFinite(v) ? v : 0));
   const n = sig.length;
   if (n === 0) return [];

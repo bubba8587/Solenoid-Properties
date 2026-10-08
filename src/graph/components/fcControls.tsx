@@ -1,6 +1,7 @@
-// [[C94]] formatFamilyGates, [[D41]] formatFlowsDownstream, [[C25]] firstClassUnits, [[C79]] packActivationIsPresentation
+// [[C118]] formatTravelsWithValue, [[D41]] formatFlowsDownstream, [[C25]] firstClassUnits, [[C79]] packActivationIsPresentation
 
-import { useMemo, useSyncExternalStore, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import type * as React from "react";
 import {
   FORMAT_STYLE_LABELS, FORMAT_STYLE_GROUPS, DATE_FORMAT_STYLES, UNIT_ANNOTATIONS,
   LOGICAL_STYLE_LABELS, TEXT_CASE_LABELS, unitGroupLabel, type FormatStyleId, type LogicalStyle, type TextCase,
@@ -8,6 +9,8 @@ import {
 import { packsStore } from "../packs";
 import { activePackUnits, activePackFormats } from "../fcExtensions";
 import { LazySelect } from "./LazySelect";
+import { usePendingDraft } from "../draftFlush";
+import { stopDragStart } from "../coarse";
 
 // The FC's flow states (authored ← →, inherited → →, dictated ← ←): tree/specs/values/format-model.md.
 
@@ -95,7 +98,7 @@ export function useFcFormatOptions(): FcFormatOptions {
   }, [packsVersion]);
 }
 
-export function numberFormatOptions(packFormatGroups: Map<string, FcOption[]>) {
+export function numberFormatOptions(packFormatGroups: Map<string, FcOption[]> = new Map()) {
   return (
     <>
       {Object.entries(FORMAT_STYLE_GROUPS).map(([group, styles]) =>
@@ -260,5 +263,45 @@ export function UnitSelect({ value, onChange, className, title, disabled }: {
     >
       {unitOptions(opts)}
     </LazySelect>
+  );
+}
+
+/** A Custom style's pattern, committed on Enter or blur ([[C95]] commitOnEnter); a blank entry keeps the pattern shown. */
+export function CustomPatternField({ value, date, onCommit, className }: {
+  value: string;
+  date: boolean;
+  onCommit: (pattern: string) => void;
+  className?: string;
+}) {
+  // Its own draft, not inlineInput's useDraftCommit: that module reaches the graph editor, which the Obsidian plugin can't bundle.
+  const [draft, setDraft] = useState(value);
+  const canceled = useRef(false);
+  useEffect(() => { setDraft(value); }, [value]);
+  const commit = () => { const next = draft.trim() || value; if (next !== value) onCommit(next); else setDraft(value); };
+  usePendingDraft(draft !== value, commit);
+  const field = {
+    draft,
+    setDraft,
+    onBlur: () => { if (canceled.current) { canceled.current = false; setDraft(value); return; } commit(); },
+    onKeyDown: (e: React.KeyboardEvent<HTMLInputElement>) => {
+      if (e.key === "Enter") { e.preventDefault(); e.currentTarget.blur(); }
+      else if (e.key === "Escape") { canceled.current = true; e.currentTarget.blur(); }
+    },
+  };
+  return (
+    <input
+      type="text"
+      className={className}
+      value={field.draft}
+      spellCheck={false}
+      aria-label="Custom format pattern"
+      title={date ? "Date pattern: DD, MMM, YYYY, HH, mm and so on" : "Number pattern: 0, # and . for digits, a comma for grouping"}
+      placeholder={date ? "pattern, for example YYYY-MM-DD" : 'format, for example "0.00"'}
+      onChange={(e) => field.setDraft(e.target.value)}
+      onBlur={field.onBlur}
+      onKeyDown={(e) => { e.stopPropagation(); field.onKeyDown(e); }}
+      onPointerDown={stopDragStart}
+      onMouseDown={(e) => e.stopPropagation()}
+    />
   );
 }

@@ -113,11 +113,24 @@ export function readInput<T>(wired: readonly T[] | undefined, literal: T): T | n
   return wired === undefined || wired.length === 0 ? literal : (wired[0] ?? null);
 }
 
+/** A card's input roles: its class's, or for a card whose roles change with its op (Series), the current op's. */
+export function rolesOf(node: ClassicPreset.Node): Record<string, InputRole> | undefined {
+  return (node as { currentInputRoles?: () => Record<string, InputRole> }).currentInputRoles?.()
+    ?? (node.constructor as { inputRoles?: Record<string, InputRole> }).inputRoles;
+}
+
 /** A declared input read by its role ([[D86]] blankRoles): unwired, the typed value; wired, the cable's; a blank as the role reads it. */
 export function readRole<T = unknown>(node: ClassicPreset.Node, key: string, wired: readonly unknown[] | undefined): T {
-  const role = (node.constructor as { inputRoles?: Record<string, InputRole> }).inputRoles?.[key];
+  const role = rolesOf(node)?.[key];
   if (!role) throw new Error(`${node.constructor.name}: no input role declared for "${key}"`);
   return readAsRole<T>(node, key, wired, role);
+}
+
+/** A setting read as left out takes the card's default, whole or item by item in a list ([[D86]] blankRoles). */
+export function leftOutAs<T>(v: T | readonly (T | undefined)[] | undefined, dflt: T): T | T[] {
+  if (v === undefined) return dflt;
+  // Array.isArray narrows a generic to any[], so the list is named for what it is.
+  return Array.isArray(v) ? (v as readonly (T | undefined)[]).map((x) => (x === undefined ? dflt : x)) : (v as T);
 }
 
 /** `readRole` with the role given, for a card whose roles change with its op (Series). */

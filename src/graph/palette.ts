@@ -1,5 +1,6 @@
-// [[C62]] paletteAllOrNone
+// [[B14]] oneDesignSystem
 import { createNotifier, createToggleStore } from "./storeKit";
+import { colormapRgb } from "./colormaps";
 
 // ── Color helpers ────────────────────────────────────────────────────────────
 function parseHex(hex: string): [number, number, number] | null {
@@ -55,18 +56,6 @@ export function hexToHsl(hex: string): [number, number, number] {
   return t ? rgbToHsl(...t) : [0, 0, 0];
 }
 
-function hslToHex(h: number, s: number, l: number): string {
-  h = ((h % 360) + 360) % 360;
-  const c = (1 - Math.abs(2 * l - 1)) * s;
-  const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
-  const m = l - c / 2;
-  const [r1, g1, b1] =
-    h < 60 ? [c, x, 0] : h < 120 ? [x, c, 0] : h < 180 ? [0, c, x] :
-    h < 240 ? [0, x, c] : h < 300 ? [x, 0, c] : [c, 0, x];
-  const to = (n: number) => Math.round(Math.min(1, Math.max(0, n + m)) * 255).toString(16).padStart(2, "0");
-  return `#${to(r1)}${to(g1)}${to(b1)}`;
-}
-
 export function hexToRgba(hex: string, alpha: number): string {
   const t = parseHex(hex);
   if (!t) return `rgba(139,124,246,${alpha})`;
@@ -83,11 +72,12 @@ export function contrastInk(hex: string): string {
   return ink;
 }
 
+// Android Chrome's rule for the toolbar it tints with theme-color (ColorUtils.shouldUseLightForegroundOnBackground),
+// so the accent's ink agrees with the browser's own icons: white wherever white clears 3:1 against the fill.
+const LIGHT_INK_CONTRAST = 3;
 function computeInk(hex: string): string {
-  const t = parseHex(hex);
-  if (!t) return "#fff";
-  const lum = (0.299 * t[0] + 0.587 * t[1] + 0.114 * t[2]) / 255;
-  return lum > 0.62 ? "#1a1a1a" : "#fff";
+  if (!parseHex(hex)) return "#fff";
+  return 1.05 / (relLum(hex) + 0.05) >= LIGHT_INK_CONTRAST ? "#fff" : "#1a1a1a";
 }
 
 function bakeInks(map: Record<PaletteSlot, string>): void {
@@ -196,6 +186,12 @@ function isPaletteSlot(s: string): s is PaletteSlot {
 
 const SOCKET_VAR_BY_NAME = new Map(SOCKET_VARS.map((s) => [s.var, s]));
 
+/** The palette slot behind a socket color expression, or null when it names no socket var. */
+export function socketVarSlot(expr: string): PaletteSlot | null {
+  const m = /--[a-z0-9-]+/i.exec(expr);
+  return (m && SOCKET_VAR_BY_NAME.get(m[0])?.slot) || null;
+}
+
 export function socketVarHex(expr: string, mode: "dark" | "light"): string {
   if (expr.startsWith("#")) return expr;
   const m = /--[a-z0-9-]+/i.exec(expr);
@@ -208,7 +204,7 @@ export function socketVarHex(expr: string, mode: "dark" | "light"): string {
 }
 
 // ── Built-in palettes ────────────────────────────────────────────────────────
-export type PaletteName = "Default" | "Muted" | "Colorblind-safe" | "Solarized" | "Equinox" | "Orchard" | "Blueprint";
+export type PaletteName = "Default" | "Muted" | "Colorblind-safe" | "Solarized" | "Equinox" | "Orchard" | "Blueprint" | "Neon" | "Dawn and Dusk";
 
 const MUTED: Record<PaletteSlot, string> = {
   gray:      "#8a8f98",
@@ -263,10 +259,15 @@ const SOLARIZED: Record<PaletteSlot, string> = {
   pink:      SOL.magenta,
 };
 
-const EQUINOX_GRAY = "#8a8f98";
-const EQUINOX: Record<PaletteSlot, string> = Object.fromEntries(
-  COLOR_PALETTE.map((slot) => [slot, EQUINOX_GRAY]),
-) as Record<PaletteSlot, string>;
+const EQUINOX_BAND: [number, number] = [0.42, 0.9];
+function equinoxPalette(): Record<PaletteSlot, string> {
+  const lightness = COLOR_PALETTE.map((slot) => hexToOklch(PALETTE[slot])[0]);
+  const lo = Math.min(...lightness), hi = Math.max(...lightness);
+  const [to0, to1] = EQUINOX_BAND;
+  return Object.fromEntries(COLOR_PALETTE.map((slot, i) =>
+    [slot, oklchToHex(to0 + ((lightness[i] - lo) / (hi - lo)) * (to1 - to0), 0, 0)])) as Record<PaletteSlot, string>;
+}
+const EQUINOX = equinoxPalette();
 
 const PEAR = {
   pearFill: "#649117", pearBright: "#b8d532",
@@ -304,6 +305,88 @@ const BLUEPRINT: Record<PaletteSlot, string> = {
   gray:      "#9aa8bd",
 };
 
+const NEON_STEP = 0.35;
+const NEON_MIN_LUM = 0.175;
+const NEON_NUDGE = 45;
+const NEON_NUDGE_SHARE = 1 / 3;
+const NEON_NUDGE_SAMPLES = 80;
+const NEON_PASSES = 3;
+const PEAK_LUM = relLum("#ffff00");
+
+function okDistance(a: string, b: string): number {
+  const [l1, c1, h1] = hexToOklch(a), [l2, c2, h2] = hexToOklch(b);
+  const r1 = (h1 * Math.PI) / 180, r2 = (h2 * Math.PI) / 180;
+  return Math.hypot(l1 - l2, c1 * Math.cos(r1) - c2 * Math.cos(r2), c1 * Math.sin(r1) - c2 * Math.sin(r2));
+}
+
+function neonAt(hue: number, sat: number, value: number): string {
+  if (relLum(hsvToHex(hue, sat, value)) >= NEON_MIN_LUM) return hsvToHex(hue, sat, value);
+  let lo = 0, hi = sat;
+  for (let i = 0; i < 20; i++) {
+    const mid = (lo + hi) / 2;
+    if (relLum(hsvToHex(hue, mid, value)) >= NEON_MIN_LUM) lo = mid; else hi = mid;
+  }
+  return hsvToHex(hue, lo, value);
+}
+
+function neonPalette(): Record<PaletteSlot, string> {
+  const hsv = (slot: PaletteSlot) => rgbToHsv(...parseHex(PALETTE[slot])!);
+  const socketSlots = [...new Set(SOCKET_VARS.map((s) => s.slot))];
+  let floor = Infinity;
+  for (const a of socketSlots) for (const b of socketSlots) if (a < b) floor = Math.min(floor, okDistance(PALETTE[a], PALETTE[b]));
+  const ring = COLOR_PALETTE.filter((slot) => slot !== "gray").sort((a, b) => hsv(a)[0] - hsv(b)[0]);
+  const plan = ring.map((slot, i) => {
+    const [h, s, v] = hsv(slot);
+    const up = ((hsv(ring[(i + 1) % ring.length])[0] - h + 360) % 360) * NEON_NUDGE_SHARE;
+    const down = ((h - hsv(ring[(i - 1 + ring.length) % ring.length])[0] + 360) % 360) * NEON_NUDGE_SHARE;
+    const reach = NEON_NUDGE * (1 - relLum(hsvToHex(h, 1, 1)) / PEAK_LUM);
+    return { slot, h, sat: 1 - (1 - s) * NEON_STEP, value: 1 - (1 - v) * NEON_STEP, from: -Math.min(reach, down), to: Math.min(reach, up), reach };
+  }).sort((a, b) => b.reach - a.reach);
+  const out = { gray: PALETTE.gray } as Record<PaletteSlot, string>;
+  for (const p of plan) out[p.slot] = neonAt(p.h, p.sat, p.value);
+  for (let pass = 0; pass < NEON_PASSES; pass++) {
+    for (const p of plan) {
+      const others = COLOR_PALETTE.filter((o) => o !== p.slot).map((o) => out[o]);
+      const spacing = (hex: string) => Math.min(...others.map((o) => okDistance(hex, o)));
+      let best: string | null = null, bestLum = -1, roomiest = out[p.slot], roomiestSpacing = -1;
+      for (let i = 0; i <= NEON_NUDGE_SAMPLES; i++) {
+        const cand = neonAt(p.h + p.from + ((p.to - p.from) * i) / NEON_NUDGE_SAMPLES, p.sat, p.value);
+        const room = spacing(cand);
+        if (room >= floor && relLum(cand) > bestLum) { best = cand; bestLum = relLum(cand); }
+        if (room > roomiestSpacing) { roomiest = cand; roomiestSpacing = room; }
+      }
+      out[p.slot] = best ?? roomiest;
+    }
+  }
+  return out;
+}
+const NEON = neonPalette();
+
+const PLASMA_DUSK = 0.4;
+const PLASMA_DAWN = 0.92;
+const DD_SATURATION = 0.65;
+const DD_TINT = 0.1;
+const DD_GRAY_TINT = 0.03;
+const plasmaAt = (t: number): [number, number, number] => {
+  const [r, g, b] = colormapRgb("plasma", t)!;
+  const to = (n: number) => Math.round(n).toString(16).padStart(2, "0");
+  return hexToOklch(`#${to(r)}${to(g)}${to(b)}`);
+};
+function dawnDuskPalette(): Record<PaletteSlot, string> {
+  const ab = ([, c, h]: [number, number, number]) => [c * Math.cos((h * Math.PI) / 180), c * Math.sin((h * Math.PI) / 180)];
+  const [ka, kb] = ab(plasmaAt(PLASMA_DUSK));
+  const out = {} as Record<PaletteSlot, string>;
+  for (const slot of COLOR_PALETTE) {
+    const lch = hexToOklch(PALETTE[slot]);
+    const [a, b] = ab(lch).map((x) => x * DD_SATURATION);
+    const t = slot === "gray" ? DD_GRAY_TINT : DD_TINT;
+    const [ta, tb] = [a + (ka - a) * t, b + (kb - b) * t];
+    out[slot] = oklchToHex(lch[0], Math.hypot(ta, tb), (Math.atan2(tb, ta) * 180) / Math.PI);
+  }
+  return out;
+}
+const DAWN_DUSK = dawnDuskPalette();
+
 export const BUILTIN_PALETTES: Record<PaletteName, Record<PaletteSlot, string>> = {
   "Default": { ...PALETTE },
   "Muted": MUTED,
@@ -312,6 +395,8 @@ export const BUILTIN_PALETTES: Record<PaletteName, Record<PaletteSlot, string>> 
   "Equinox": EQUINOX,
   "Orchard": ORCHARD,
   "Blueprint": BLUEPRINT,
+  "Neon": NEON,
+  "Dawn and Dusk": DAWN_DUSK,
 };
 
 export const PALETTE_NAMES = Object.keys(BUILTIN_PALETTES) as PaletteName[];
@@ -421,7 +506,7 @@ const CVD_CHROME: PaletteChrome = {
   },
 };
 
-// Solarized's near-3:1 body contrast is its identity: do not raise these tones ([[C62]] paletteAllOrNone).
+// Solarized's near-3:1 body contrast is its identity: do not raise these tones ([[B14]] oneDesignSystem).
 const BASE = {
   b03: "#002b36", b02: "#073642", b01: "#586e75", b00: "#657b83",
   b0: "#839496", b1: "#93a1a1", b2: "#eee8d5", b3: "#fdf6e3",
@@ -453,7 +538,7 @@ const SOLARIZED_CHROME: PaletteChrome = {
   },
 };
 
-const EQUINOX_CHROME: PaletteChrome = {
+const EQUINOX_BASE_CHROME: { dark: Record<ChromeKey, string>; light: Record<ChromeKey, string> } = {
   dark: {
     appBg: "#141414", canvasBg: "#0b0b0b", canvasDot: "#2a2a2a",
     surface: "#1e1e1e", surfaceSunken: "#141414", surfaceRaised: "#262626",
@@ -484,15 +569,81 @@ const BLUEPRINT_CHROME: PaletteChrome = {
   },
 };
 
+const GROUND_KEYS: ChromeKey[] = ["appBg", "canvasBg", "surface", "surfaceSunken", "surfaceRaised"];
+const BORDER_KEYS: ChromeKey[] = ["border", "borderStrong", "borderSubtle"];
+const INK_KEYS: ChromeKey[] = ["text", "textBright", "textDim", "textMuted"];
+function polarizeRamp(ramp: Record<ChromeKey, string>, ground: string, ink: string, strength: number): Record<ChromeKey, string> {
+  const out = { ...ramp };
+  for (const k of GROUND_KEYS) out[k] = mixHex(ramp[k], ground, strength);
+  for (const k of BORDER_KEYS) out[k] = mixHex(ramp[k], ink, strength / 2);
+  for (const k of INK_KEYS) out[k] = mixHex(ramp[k], ink, strength);
+  return out;
+}
+const NEON_CHROME: PaletteChrome = {
+  dark: polarizeRamp(DEFAULT_CHROME.dark, "#000000", "#ffffff", 0.5),
+  light: polarizeRamp(DEFAULT_CHROME.light, "#ffffff", "#000000", 0.5),
+};
+
+const EQUINOX_POLARIZE = 0.3;
+const EQUINOX_CHROME: PaletteChrome = {
+  dark: polarizeRamp(EQUINOX_BASE_CHROME.dark, "#000000", "#ffffff", EQUINOX_POLARIZE),
+  light: polarizeRamp(EQUINOX_BASE_CHROME.light, "#ffffff", "#000000", EQUINOX_POLARIZE),
+};
+
+const DD_GROUND_CHROMA = 0.04;
+const DD_INK_CHROMA = 0.025;
+const DD_DUSK_LIFT = 0.06;
+function tintRamp(ramp: Record<ChromeKey, string>, groundHue: number, inkHue: number, lift: number): Record<ChromeKey, string> {
+  const out = { ...ramp };
+  for (const k of CHROME_KEYS) {
+    const ink = INK_KEYS.includes(k);
+    const L = hexToOklch(ramp[k])[0] + (ink ? 0 : lift);
+    out[k] = oklchToHex(L, ink ? DD_INK_CHROMA : DD_GROUND_CHROMA, ink ? inkHue : groundHue);
+  }
+  return out;
+}
+const DAWN_DUSK_CHROME: PaletteChrome = {
+  dark: tintRamp(DEFAULT_CHROME.dark, plasmaAt(PLASMA_DUSK)[2], plasmaAt(PLASMA_DAWN)[2], DD_DUSK_LIFT),
+  light: tintRamp(DEFAULT_CHROME.light, plasmaAt(PLASMA_DAWN)[2], plasmaAt(PLASMA_DUSK)[2], 0),
+};
+
+const CANVAS_STEP = { dark: 0.1, light: 0.05 };
+const contrastRatio = (a: string, b: string) => {
+  const [x, y] = [relLum(a), relLum(b)].sort((p, q) => q - p);
+  return (x + 0.05) / (y + 0.05);
+};
+function deepenCanvas(ramp: ChromeRamp, mode: "dark" | "light"): ChromeRamp {
+  const { canvasBg, canvasDot, surface } = ramp;
+  if (!isHex(canvasBg) || !isHex(canvasDot) || !isHex(surface)) return ramp;
+  const [l, c, h] = hexToOklch(canvasBg);
+  const target = hexToOklch(surface)[0] - CANVAS_STEP[mode];
+  if (l <= target) return ramp;
+  const dim = mode === "dark" ? target / l : 1;
+  const canvas = oklchToHex(target, c * dim, h);
+  const [dl, dc, dh] = hexToOklch(canvasDot);
+  const want = contrastRatio(canvasDot, canvasBg);
+  const above = dl > l;
+  let near = target, far = above ? 1 : 0;
+  for (let i = 0; i < 22; i++) {
+    const mid = (near + far) / 2;
+    if (contrastRatio(oklchToHex(mid, dc * dim, dh), canvas) >= want) far = mid; else near = mid;
+  }
+  return { ...ramp, canvasBg: canvas, canvasDot: oklchToHex(far, dc * dim, dh) };
+}
+const deepened = (chrome: PaletteChrome): PaletteChrome =>
+  ({ dark: deepenCanvas(chrome.dark, "dark"), light: deepenCanvas(chrome.light, "light") });
+
 const NO_CHROME: PaletteChrome = { dark: {}, light: {} };
 export const BUILTIN_CHROME: Record<PaletteName, PaletteChrome> = {
   "Default": NO_CHROME,
   "Muted": MUTED_CHROME,
   "Colorblind-safe": CVD_CHROME,
-  "Solarized": SOLARIZED_CHROME,
+  "Solarized": deepened(SOLARIZED_CHROME),
   "Equinox": EQUINOX_CHROME,
-  "Orchard": ORCHARD_CHROME,
-  "Blueprint": BLUEPRINT_CHROME,
+  "Orchard": deepened(ORCHARD_CHROME),
+  "Blueprint": deepened(BLUEPRINT_CHROME),
+  "Neon": NEON_CHROME,
+  "Dawn and Dusk": deepened(DAWN_DUSK_CHROME),
 };
 
 // ── Accent-adaptive chrome ──────────────────────────────────────────────────────
@@ -840,6 +991,33 @@ export const NEUTRAL_HEX: Record<string, string> = Object.assign(Object.create(n
   [NEUTRAL_DARK]: "#3a3d42",
 });
 export const NEUTRAL_CYCLE = [NEUTRAL_WHITE, "gray", NEUTRAL_DARK] as const;
+
+// Each neutral is drawn from the chrome color of about its lightness, so a tinted palette's neutrals share its background's tint.
+const NEUTRAL_CHROME_KEY: Record<string, ChromeKey> = { [NEUTRAL_WHITE]: "text", gray: "textMuted", [NEUTRAL_DARK]: "borderStrong" };
+const NEUTRAL_TINT_MAX_CHROMA = 0.05;
+// The OKLCH lightness a chrome color must have to stand for each shade; Solarized's dim text is no white.
+const NEUTRAL_L_RANGE: Record<string, [number, number]> = { [NEUTRAL_WHITE]: [0.85, 1], gray: [0.45, 0.8], [NEUTRAL_DARK]: [0.2, 0.55] };
+
+/** A neutral shade (white, gray or dark) as the active palette draws it: its chrome's own color, else the default shade tinted with the chrome background's hue, else the default ([[B14]] oneDesignSystem). */
+export function neutralHex(slot: string): string {
+  const fallback = slot === "gray" ? _effective.gray : NEUTRAL_HEX[slot];
+  const ramp = _effectiveChrome.dark;
+  const own = ramp[NEUTRAL_CHROME_KEY[slot]];
+  const range = NEUTRAL_L_RANGE[slot];
+  if (isHex(own) && range) {
+    const L = hexToOklch(own)[0];
+    if (L >= range[0] && L <= range[1]) return own;
+  }
+  const bg = ramp.appBg;
+  if (!isHex(bg) || !fallback) return fallback ?? _effective.gray;
+  const [, c, h] = hexToOklch(bg);
+  return oklchToHex(hexToOklch(fallback)[0], Math.min(c, NEUTRAL_TINT_MAX_CHROMA), h);
+}
+
+/** The app accent's color: a palette slot's, with the gray swatch drawn as the neutral gray. */
+export function resolveAccent(slot: string): string {
+  return slot === "gray" ? neutralHex("gray") : resolveColor(slot);
+}
 export function isNeutralShade(slot: string): boolean {
   return slot === NEUTRAL_WHITE || slot === NEUTRAL_DARK;
 }
@@ -848,19 +1026,17 @@ export function nextNeutral(current: string | undefined): string {
   return i === -1 ? "gray" : NEUTRAL_CYCLE[(i + 1) % NEUTRAL_CYCLE.length];
 }
 
-// ── Sequential height ramp (Surface / Contour / Vector Field) ────────────────
-const RAMP_SLOTS: PaletteSlot[] = ["violet", "blue", "teal", "green", "gold"];
-const RAMP_L = [0.26, 0.38, 0.5, 0.62, 0.78];
+// ── Sequential height ramp (Surface / Contour / Vector Field, and the Heatmap's and XY figures' default) ──
+// The palette's own colors, darkest first, so the ramp reads as height and every stop is a color the palette has.
+const RAMP_SLOTS: PaletteSlot[] = ["blue", "green", "teal", "gold"];
 let _ramp: Array<[number, number, number]> | null = null;
 let _rampVer = -1;
 function rampStops(): Array<[number, number, number]> {
   if (_ramp && _rampVer === paletteVersion()) return _ramp;
   _rampVer = paletteVersion();
-  _ramp = RAMP_SLOTS.map((slot, i) => {
-    const t = parseHex(resolveColor(slot)) ?? [138, 143, 152];
-    const [h, s] = rgbToHsl(...t);
-    return parseHex(hslToHex(h, s, RAMP_L[i])) ?? t;
-  });
+  _ramp = RAMP_SLOTS.map((slot) => resolveColor(slot))
+    .sort((a, b) => relLum(a) - relLum(b))
+    .map((hex) => parseHex(hex) ?? [138, 143, 152]);
   return _ramp;
 }
 export function heightRampColor(t: number): [number, number, number] {
@@ -871,7 +1047,27 @@ export function heightRampColor(t: number): [number, number, number] {
   return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f];
 }
 
+// ── Diverging ramp (a Heatmap with a center) ────────────────────────────────
+// The palette's blue, gray and vermilion as they are: two hues meeting at the neutral.
+const DIVERGE_SLOTS: PaletteSlot[] = ["blue", "gray", "vermilion"];
+let _diverge: Array<[number, number, number]> | null = null;
+let _divergeVer = -1;
+function divergeStops(): Array<[number, number, number]> {
+  if (_diverge && _divergeVer === paletteVersion()) return _diverge;
+  _divergeVer = paletteVersion();
+  _diverge = DIVERGE_SLOTS.map((slot) => parseHex(resolveColor(slot)) ?? [138, 143, 152]);
+  return _diverge;
+}
+export function divergingRampColor(t: number): [number, number, number] {
+  const stops = divergeStops();
+  const u = Math.max(0, Math.min(1, t)) * (stops.length - 1);
+  const i = Math.min(stops.length - 2, Math.floor(u));
+  const f = u - i, a = stops[i], b = stops[i + 1];
+  return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f];
+}
+
 // Total on purpose: a stray slot falls back to gray rather than crashing a render.
 export function resolveColor(slot: string): string {
-  return NEUTRAL_HEX[slot] ?? (isPaletteSlot(slot) ? _effective[slot] : undefined) ?? _effective.gray;
+  if (isNeutralShade(slot)) return neutralHex(slot);
+  return (isPaletteSlot(slot) ? _effective[slot] : undefined) ?? _effective.gray;
 }

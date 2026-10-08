@@ -3,12 +3,14 @@ import { parseCsvRows } from "./csv";
 import { parseDateToSerial, parseDate, formatDateSerial, DEFAULT_DATE_FORMAT } from "./nodes/dateSerial";
 import { isSolError, solError, type SolError } from "./errorValue";
 import { coerceLogical, decimalFromText } from "./valueKinds";
-import { type ColumnUnit, type UnitCell, isUnitCell } from "./unitValue";
+import { type ColumnUnit, type UnitCell, isUnitCell, roundAtLargerTerm } from "./unitValue";
 import { formatDim, dimEqual, type Dim } from "./dimension";
 import { parseColumnUnitFromHeader, columnUnitFromSpec, tagFrameCellUnit, matrixCellsFromList } from "./unitColumn";
 import { displayMagnitudeOf, fcUnitToUnit } from "./unitBridge";
 import { elementFamilyOf, type SocketDataType } from "./sockets";
 import { dateAnnotationPattern, type FormatAnnotation } from "./formatAnnotationStore";
+import { typesAt, isFrameAt, type ColumnTypes, type NestedTables } from "./cubeTypes";
+import type { CubePath } from "./literalEditors";
 
 export type FrameColType = "number" | "string" | "date" | "logical";
 
@@ -209,23 +211,17 @@ export function coerceFrameCell(type: FrameColType, raw: string): FrameCell {
   return NaN;
 }
 
-/** A list item read as a type, as List Input reads one: what the type can't read is blank. Converts, never filters; the caller passes null and per-cell errors through. */
+/** A list item read as a type. Text reads as a Frame cell does, so what the type can't read is NaN ([[D93]] oneTextReading). Converts, never filters; the caller passes null and per-cell errors through. */
 export function coerceListItem(type: FrameColType, v: unknown): FrameCell {
+  if (typeof v === "string" && type !== "string") return coerceFrameCell(type, v);
   switch (type) {
     case "number": {
       if (typeof v === "number") return Number.isFinite(v) ? v : null;
       if (typeof v === "boolean") return v ? 1 : 0;
-      if (typeof v === "string") { const n = decimalFromText(v); return Number.isFinite(n) ? n : null; }
       return null;
     }
     case "date": {
-      if (typeof v === "number") return Number.isFinite(v) ? v : null;
-      if (typeof v === "string") {
-        const d = parseDate(v);
-        if (isSolError(d)) return d;
-        return d !== null && Number.isFinite(d) ? d : null;
-      }
-      return null;
+      return typeof v === "number" && Number.isFinite(v) ? v : null;
     }
     case "string":
       if (typeof v === "string") return v;
@@ -261,7 +257,7 @@ function inferColType(cells: ReadonlyArray<string>): FrameColType {
   if (nonBlank.length === 0) return "string";
   if (nonBlank.every((c) => cellToNumber(c) !== null)) return "number";
   if (nonBlank.every(isLogicalCell)) return "logical";
-  if (nonBlank.every(isDateCell)) return "date";
+  if (nonBlank.every((c) => dateCellSerial(c) !== null)) return "date";
   return "string";
 }
 
@@ -338,8 +334,10 @@ function isBlank(v: unknown): boolean {
 }
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}([ T]\d{2}:\d{2}(:\d{2})?(\.\d+)?(Z|[+-]\d{2}:?\d{2})?)?$/;
-function isDateCell(v: unknown): boolean {
-  return typeof v === "string" && ISO_DATE.test(v.trim()) && Number.isFinite(parseDateToSerial(v));
+function dateCellSerial(v: unknown): number | null {
+  if (typeof v !== "string" || !ISO_DATE.test(v.trim())) return null;
+  const serial = parseDateToSerial(v);
+  return Number.isFinite(serial) ? serial : null;
 }
 
 function isLogicalCell(v: unknown): boolean {
@@ -377,17 +375,30 @@ export function inferColumn(name: string, cells: ReadonlyArray<unknown>): FrameC
   if (nonBlank.length > 0 && nonBlank.every((c) => typeof c === "boolean")) {
     return { name, type: "logical", values: read((c) => c as boolean), raw };
   }
-  const numeric = nonBlank.length > 0 && nonBlank.every((c) => cellToNumber(c) !== null);
-  if (numeric) {
-    return { name, type: "number", values: read(cellToNumber), raw, ...(recovered ? { unit: recovered } : {}) };
+  const readAll = (fn: (c: unknown) => number | null): FrameCell[] | null => {
+    if (nonBlank.length === 0) return null;
+    const out = new Array<FrameCell>(cells.length);
+    for (let i = 0; i < cells.length; i++) {
+      const c = cells[i];
+      if (isSolError(c)) { out[i] = c; continue; }
+      if (isBlank(c)) { out[i] = null; continue; }
+      const v = fn(c);
+      if (v === null) return null;
+      out[i] = v;
+    }
+    return out;
+  };
+  const numbers = readAll(cellToNumber);
+  if (numbers) {
+    return { name, type: "number", values: numbers, raw, ...(recovered ? { unit: recovered } : {}) };
   }
   const logical = nonBlank.length > 0 && nonBlank.every(isLogicalCell);
   if (logical) {
     return { name, type: "logical", values: read(cellToBool), raw };
   }
-  const dates = nonBlank.length > 0 && nonBlank.every(isDateCell);
+  const dates = readAll(dateCellSerial);
   if (dates) {
-    return { name, type: "date", values: read((c) => parseDateToSerial(String(c))), raw };
+    return { name, type: "date", values: dates, raw };
   }
   return { name, type: "string", values: read((c) => String(c).trim()), raw };
 }
@@ -413,11 +424,34 @@ export function frameFromCells(headers: ReadonlyArray<string>, rows: ReadonlyArr
   return { __frame: true, columns };
 }
 
+function recordKeys(records: ReadonlyArray<Record<string, unknown>>): string[] {
+  const keys = new Set<string>();
+  for (const rec of records) for (const k of Object.keys(rec)) keys.add(k);
+  return [...keys];
+}
+
 export function frameFromRecords(records: ReadonlyArray<Record<string, unknown>>): FrameValue {
-  const keys: string[] = [];
-  for (const rec of records) for (const k of Object.keys(rec)) if (!keys.includes(k)) keys.push(k);
+  const keys = recordKeys(records);
   const names = makeHeaders(keys, keys.length);
   const columns = keys.map((key, j) => inferColumn(names[j], records.map((r) => r[key])));
+  return { __frame: true, columns };
+}
+
+/** A record value a Frame cell can hold; a nested value (or anything else) is blank. */
+const flatCell = (v: unknown): string | number | boolean | null =>
+  typeof v === "string" || typeof v === "number" || typeof v === "boolean" ? v : null;
+
+/** A Cube cell's records as a flat Frame: a picked column crosses `coerceFrameCell` with its text kept as `raw`, the rest take `inferColumn`'s reading, and a nested value is blank, since a Frame cell is flat ([[D90]] cubeTypesAtDepth). */
+export function frameCellFromRecords(records: ReadonlyArray<Record<string, unknown>>, picks: ColumnTypes = {}): FrameValue {
+  const keys = recordKeys(records);
+  const names = makeHeaders(keys, keys.length);
+  const columns = keys.map((key, j): FrameColumn => {
+    const cells = records.map((r) => flatCell(r[key]));
+    const type = picks[key];
+    if (!type) return inferColumn(names[j], cells);
+    const raw = cells.map((c) => (c == null ? "" : typeof c === "boolean" ? (c ? "TRUE" : "FALSE") : String(c)));
+    return { name: names[j], type, values: raw.map((t, i) => (cells[i] == null ? null : coerceFrameCell(type, t))), raw };
+  });
   return { __frame: true, columns };
 }
 
@@ -426,48 +460,42 @@ function pickedCell(type: FrameColType, v: unknown): CubeCell {
 }
 
 const listItemAs = (type: FrameColType, x: unknown): CubeCell =>
-  Array.isArray(x) ? x.map((y) => listItemAs(type, y)) : x == null || isSolError(x) ? (x as CubeCell) : isCubeValue(x) || isFrameValue(x) ? typedCubeCell(type, x) : coerceListItem(type, x);
+  Array.isArray(x) ? x.map((y) => listItemAs(type, y)) : x == null || isSolError(x) || isCubeValue(x) || isFrameValue(x) ? (x as CubeCell) : coerceListItem(type, x);
 
-/** A cell read as its column's declared type ([[D80]] cubeColumnTypes): a scalar as a Frame cell is (unreadable is NaN), a list's items as List Input's are (unreadable is blank), and a nested table with every column read the same way. The cells as typed are never changed. */
+/** A cell read as its column's declared type ([[D90]] cubeTypesAtDepth): a value as a Frame cell is (unreadable is NaN), a list's items as List Input's are (unreadable is blank). A nested table keeps its own columns' types. The cells as typed are never changed. */
 export function typedCubeCell(type: FrameColType, c: CubeCell): CubeCell {
-  if (c == null || isSolError(c)) return c;
+  if (c == null || isSolError(c) || isCubeValue(c) || isFrameValue(c)) return c;
   if (Array.isArray(c)) return c.map((x) => listItemAs(type, x));
-  if (isCubeValue(c)) return makeCube(c.columns.map((col) => ({ ...col, type, cells: col.cells.map((x) => typedCubeCell(type, x)) })));
-  if (isFrameValue(c)) {
-    return {
-      __frame: true,
-      columns: c.columns.map((col) => ({
-        name: col.name, type,
-        values: col.values.map((v) => (v == null || isSolError(v) ? v : pickedCell(type, v) as FrameCell)),
-        ...(type === "number" && col.unit ? { unit: col.unit } : {}),
-        ...(col.format ? { format: col.format } : {}),
-      })),
-    };
-  }
   return isUnitCell(c) ? c : pickedCell(type, c);
 }
 
-export function recordsToCube(records: ReadonlyArray<Record<string, unknown>>, picks: Readonly<Record<string, FrameColType>> = {}): CubeValue {
-  const keys: string[] = [];
-  for (const rec of records) for (const k of Object.keys(rec)) if (!keys.includes(k)) keys.push(k);
+/** Records to a Cube: `picks` types the top level's columns, and each table nested in a cell takes what `nested` declares for its own records path, under `base`: a Frame or a Cube, and its columns' types ([[D90]] cubeTypesAtDepth). */
+export function recordsToCube(
+  records: ReadonlyArray<Record<string, unknown>>,
+  picks: ColumnTypes = {},
+  nested: NestedTables = {},
+  base: CubePath = [],
+): CubeValue {
+  const keys = recordKeys(records);
   const names = makeHeaders(keys, keys.length);
-  const toCell = (v: unknown): CubeCell => {
+  const tableAt = (rows: Record<string, unknown>[], at: CubePath): CubeCell =>
+    isFrameAt(nested, at) ? frameCellFromRecords(rows, typesAt(nested, at)) : recordsToCube(rows, typesAt(nested, at), nested, at);
+  const toCell = (v: unknown, at: CubePath): CubeCell => {
     if (v == null) return null;
     if (Array.isArray(v)) {
       const present = v.filter((x) => x != null);
       const objs = present.filter((x) => typeof x === "object" && !Array.isArray(x));
-      if (present.length > 0 && objs.length === present.length) return recordsToCube(v.map((x) => (x ?? {}) as Record<string, unknown>));
-      return v.map(toCell);
+      if (present.length > 0 && objs.length === present.length) return tableAt(v.map((x) => (x ?? {}) as Record<string, unknown>), at);
+      return v.map((x, i) => toCell(x, [...at, i]));
     }
-    if (typeof v === "object") return recordsToCube([v as Record<string, unknown>]);
+    if (typeof v === "object") return tableAt([v as Record<string, unknown>], at);
     return v as FrameCell;
   };
-  const pickDeep = (type: FrameColType, c: CubeCell): CubeCell => typedCubeCell(type, c);
   return cubeFromColumns(keys.map((key, j) => {
-    const cells = records.map((r) => toCell(r[key]));
+    const cells = records.map((r, i) => toCell(r[key], [...base, i, key]));
     const scalarOnly = cells.every((c) => c == null || (typeof c !== "object"));
     const pick = picks[key];
-    if (!scalarOnly) return pick ? { name: names[j], cells: cells.map((c) => pickDeep(pick, c)), type: pick } : { name: names[j], cells };
+    if (!scalarOnly) return pick ? { name: names[j], cells: cells.map((c) => typedCubeCell(pick, c)), type: pick } : { name: names[j], cells };
     if (pick) return { name: names[j], cells: cells.map((c) => pickedCell(pick, c)), type: pick };
     const inferred = inferColumn(names[j], cells);
     return { name: names[j], cells, type: inferred.type };
@@ -589,15 +617,6 @@ export function toCube(v: unknown): CubeValue {
 }
 
 // ─── Relate: nest two frames into a cube (the relational producer) ─────────────
-
-const decimalExponent = (x: number): number => Number(Math.abs(x).toExponential().split("e")[1]);
-
-/** `y` rounded at the 15th significant digit of `t`, the larger term of the conversion that produced it. */
-export function roundAtLargerTerm(y: number, t: number): number {
-  if (!Number.isFinite(y) || y === 0 || !Number.isFinite(t)) return y;
-  const p = decimalExponent(y) - decimalExponent(t) + 15;
-  return p < 1 ? 0 : p > 100 ? y : Number(y.toPrecision(p));
-}
 
 function dimKeyId(base: number, dim: Dim, display: string | undefined): string {
   const cur = dimEqual(dim, { currency: 1 }) ? (display ?? "") : "";

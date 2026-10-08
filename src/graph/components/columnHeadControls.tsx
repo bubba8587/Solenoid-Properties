@@ -1,13 +1,15 @@
 import { useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
+import { stepListSel } from "./gridKeyboard";
 import { tokenAtCaret } from "../formulaSyntax";
 import { useDismissOnOutside } from "./useDismissOnOutside";
 import { PaintbrushIcon } from "./PaintbrushIcon";
+import { InfoIcon } from "./Icons";
+import { TypeIcon } from "./TypeIcon";
 import { closeParens } from "../closeParens";
 
 type ColType = "number" | "string" | "date" | "logical";
 export const COLTYPE_ORDER: ColType[] = ["number", "string", "date", "logical"];
-export const COLTYPE_GLYPH: Record<ColType, string> = { number: "#", string: "T", date: "D", logical: "B" };
 export const COLTYPE_NAME: Record<ColType, string> = { number: "Number", string: "Text", date: "Date", logical: "Boolean" };
 
 
@@ -94,6 +96,65 @@ export function ColumnFormatButton({ picked, children }: { picked: boolean; chil
   );
 }
 
+/** The header legend: what a column's type button cycles, and the names an Fx formula reads ([[C22]] rowFormulaRefs). */
+const FX_LEGEND: [string, string][] = [
+  ["@price", "this row's price"],
+  ["price", "the whole price column"],
+  ["@[Unit Price]", "a name with spaces"],
+  ["ROW()", "this row's number"],
+  ["ROWS(price)", "the row count"],
+  ["@price / SUM(price)", "this row's share of the total"],
+];
+
+/** `cube`: the Cube popup's legend, which adds the None type and a list column's `@` read ([[C22]] rowFormulaRefs). */
+export function HeaderHelpButton({ formulas, lambdas, cube = false }: { formulas: boolean; lambdas: boolean; cube?: boolean }) {
+  const [open, setOpen] = useState(false);
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  useDismissOnOutside(open, () => setOpen(false), [btnRef, panelRef]);
+  const style = useHangUnder(open, btnRef, panelRef, "left");
+
+  return (
+    <>
+      <button
+        type="button"
+        ref={btnRef}
+        className="table-popup__helpbtn"
+        title="Column headers"
+        aria-label="Column headers"
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        onClick={(e) => { e.stopPropagation(); setOpen((o) => !o); }}
+      >
+        <InfoIcon size={14} />
+      </button>
+      {open && createPortal(
+        <div ref={panelRef} className="table-popup__helppanel" style={style} {...stopAll}>
+          <div className="table-popup__helphead">Column Type</div>
+          <dl className="table-popup__helplist">
+            {cube && <div><dt>–</dt><dd>None, any kind per cell</dd></div>}
+            {COLTYPE_ORDER.map((t) => <div key={t}><dt><TypeIcon type={t} size={12} /></dt><dd>{COLTYPE_NAME[t]}</dd></div>)}
+            {formulas && <div><dt>Fx</dt><dd>a formula, run once per row</dd></div>}
+          </dl>
+          {formulas && (
+            <>
+              <div className="table-popup__helphead">In an Fx Formula</div>
+              <dl className="table-popup__helplist">
+                {FX_LEGEND.map(([code, meaning]) => (
+                  <div key={code}><dt>{code}</dt><dd>{meaning}</dd></div>
+                ))}
+                {cube && <div><dt>COUNTA(@tags)</dt><dd>how many tags this row's list holds</dd></div>}
+                {lambdas && <div><dt>λ1</dt><dd>runs that LAMBDA, each parameter reading the column of its name</dd></div>}
+              </dl>
+            </>
+          )}
+        </div>,
+        document.body,
+      )}
+    </>
+  );
+}
+
 /** The draft is the parent's (`value`, `onDraft`). */
 export function ColumnExprField({ value, lambdaOptions, onDraft, onCommit, onRevert }: {
   value: string;
@@ -154,7 +215,7 @@ export function ColumnExprField({ value, lambdaOptions, onDraft, onCommit, onRev
           if (open && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
             e.preventDefault();
             const n = lambdaOptions.length;
-            setSel((s) => (e.key === "ArrowDown" ? (s + 1) % n : (s - 1 + n) % n));
+            setSel((s) => stepListSel(s, n, e.key === "ArrowDown" ? 1 : -1));
           } else if (open && sel >= 0 && (e.key === "Enter" || e.key === "Tab")) {
             e.preventDefault();
             accept(lambdaOptions[sel]);

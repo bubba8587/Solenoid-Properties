@@ -1,5 +1,5 @@
 // [[C24]] arraySemantics, [[D41]] formatFlowsDownstream, [[D43]] unitByGranularity
-import type { ReactNode } from "react";
+import { useSyncExternalStore, type ReactNode } from "react";
 import {
   isFrameValue, isCubeValue, cubeRowCount, cubeDepth, frameRowCount, formatFrameCell,
   type CubeCell, type FrameColType, type FrameCell,
@@ -13,11 +13,18 @@ import { formatListCell } from "./valueDisplayFormat";
 import { elemFamilyOfCells, elemChipClass, type ElemFamily } from "../valuePopup";
 import { errorTip } from "./ErrorChip";
 import { cellImageSrc } from "../recordLayout";
+import { appThemeStore } from "../appTheme";
+import { resolveColor } from "../palette";
+import { repaintSparkline, SPARK_SLOTS } from "../nodes/visualOps";
 import "./ArrayChip.css";
 
-/** A text cell holding a data:image picture ([[D83]] imageTextCells). */
-export function CellImage({ src }: { src: string }): ReactNode {
-  return <img className="sol-cell-img" src={src} alt="" draggable={false} />;
+/** A text cell holding a data:image picture ([[C103]] untrustedContentSeams); a sparkline paints in the active palette ([[D82]] sparklineCell). */
+export function CellImage({ src, className = "sol-cell-img", alt = "" }: { src: string; className?: string; alt?: string }): ReactNode {
+  useSyncExternalStore(appThemeStore.subscribe, appThemeStore.version);
+  const shown = repaintSparkline(src, {
+    line: resolveColor(SPARK_SLOTS.line), pos: resolveColor(SPARK_SLOTS.pos), neg: resolveColor(SPARK_SLOTS.neg),
+  });
+  return <img className={className} src={shown} alt={alt} draggable={false} />;
 }
 
 const LIST_PREVIEW = 3;
@@ -45,6 +52,15 @@ export function cubeCellToken(cell: CubeCell, type?: FrameColType, format?: Form
   return String(cell);
 }
 
+/** A cell as a card shows it: a typed number in the General style ([[D94]] oneNumberDisplay), anything else as its token, which copies keep. */
+export function cubeCellShown(cell: CubeCell, type?: FrameColType, format?: FormatAnnotation): string {
+  if (type && cell !== null && typeof cell !== "object") {
+    const f = formatFrameCell(type, cell, format);
+    if (typeof f === "number") return formatScalar(f);
+  }
+  return cubeCellToken(cell, type, format);
+}
+
 export function frameCellNode(type: FrameColType, cell: FrameCell, format?: FormatAnnotation): ReactNode {
   if (cell === null || cell === undefined || cell === "") {
     return <span style={{ color: "var(--text-muted)" }}>—</span>;
@@ -55,7 +71,7 @@ export function frameCellNode(type: FrameColType, cell: FrameCell, format?: Form
   const img = cellImageSrc(cell);
   if (img) return <CellImage src={img} />;
   const f = formatFrameCell(type, cell, format);
-  return <>{f === null ? "" : String(f)}</>;
+  return <>{f === null ? "" : typeof f === "number" ? formatScalar(f) : f}</>;
 }
 
 export function CubeCellChip({ cell, crumb, size = "md", type, format, at }: {

@@ -3,18 +3,18 @@ import {
   type FrameValue, type FrameColumn, type FrameCell, type FrameColType,
   type CubeValue, type CubeColumn, type CubeCell,
   frameRowCount, makeHeaders, cubeFromColumns, cubeRowCount, inferColumn, isFrameValue,
-  isCubeValue, frameFromRows, formatFrameCell, selectCubeRows, cubeCellsFromColumn, roundAtLargerTerm,
+  isCubeValue, frameFromRows, formatFrameCell, selectCubeRows, cubeCellsFromColumn, flatCubeToFrame,
 } from "./frame";
-import { isSolError, solError } from "./errorValue";
-import { sameColumnUnit, isAffineDisplay, unitError, READINGS_ADD, READINGS_SCALE, type ColumnUnit } from "./unitValue";
+import { isSolError, solError, type SolError } from "./errorValue";
+import { sameColumnUnit, isAffineDisplay, unitError, READINGS_ADD, READINGS_SCALE, roundAtLargerTerm, type ColumnUnit } from "./unitValue";
 import { dimEqual, dimPow, formatDim } from "./dimension";
 import { fcUnitToUnit } from "./unitBridge";
-import { forAggregate, coerceLogical, guardFinite, decimalFromText } from "./valueKinds";
+import { forAggregate, guardFinite, decimalFromText, logicalOrTypeError } from "./valueKinds";
 import { compareStrings } from "./stringOrder";
 import { compareOp, type ComparisonOp } from "./nodes/logic";
 import { xmatchIndex, type XMatchMatchMode } from "./nodes/listOps";
 import { allocate, type AllocateMode } from "./nodes/allocateOps";
-import { aggregate, percentile, pearson, spearman, kendallTau, covariance } from "./nodes/statsOps";
+import { aggregate, percentileOf, pearson, spearman, kendallTau, covariance } from "./nodes/statsOps";
 import { parseDateToSerial } from "./nodes/dateSerial";
 
 export type AggOp =
@@ -107,19 +107,23 @@ function encodeCell(v: FrameCell): unknown {
 }
 
 function sortedIndexOrder(len: number, cellAt: (i: number) => FrameCell, type: FrameColType, dir: "asc" | "desc"): number[] {
-  const cmp = comparatorFor(type);
-  const isTail = (i: number) => {
+  const keys = new Array<number | string>(len);
+  const heads: number[] = [];
+  const tails: number[] = [];
+  for (let i = 0; i < len; i++) {
     const v = cellAt(i);
-    return v === null || isSolError(v) || (typeof v === "number" && Number.isNaN(v));
-  };
-  const idx = Array.from({ length: len }, (_, i) => i);
-  idx.sort((i, j) => {
-    const ti = isTail(i), tj = isTail(j);
-    if (ti || tj) return ti && tj ? i - j : ti ? 1 : -1;
-    const c = cmp(cellAt(i), cellAt(j));
-    return c !== 0 ? (dir === "desc" ? -c : c) : i - j;
+    if (v === null || isSolError(v) || (typeof v === "number" && Number.isNaN(v))) { tails.push(i); continue; }
+    keys[i] = type === "string" ? String(v) : type === "logical" ? (v ? 1 : 0) : (v as number);
+    heads.push(i);
+  }
+  const sign = dir === "desc" ? -1 : 1;
+  heads.sort((i, j) => {
+    const a = keys[i], b = keys[j];
+    const c = a < b ? -1 : a > b ? 1 : 0;
+    return c !== 0 ? sign * c : i - j;
   });
-  return idx;
+  for (const t of tails) heads.push(t);
+  return heads;
 }
 
 export function sortByColumn(f: FrameValue, by: string, dir: "asc" | "desc"): FrameValue {
@@ -127,8 +131,23 @@ export function sortByColumn(f: FrameValue, by: string, dir: "asc" | "desc"): Fr
   return reorderRows(f, sortedIndexOrder(frameRowCount(f), (i) => cellAt(col, i), col.type, dir));
 }
 
-function distinctIndexOrder(len: number, keyAt: (i: number) => string): number[] {
-  const seen = new Set<string>();
+type RowKey = FrameCell | symbol | undefined;
+
+/** Map key for a row's cells; a lone column keys on the raw cell (Map's SameValueZero groups as `encodeCell` does). */
+function rowKeyer(cols: readonly FrameColumn[]): (i: number) => RowKey {
+  if (cols.length === 0) return () => "";
+  if (cols.length === 1) {
+    const c = cols[0];
+    return (i) => {
+      const v = cellAt(c, i);
+      return isSolError(v) ? Symbol.for(`solenoid.error:${v.code}`) : v;
+    };
+  }
+  return (i) => JSON.stringify(cols.map((c) => encodeCell(cellAt(c, i))));
+}
+
+function distinctIndexOrder(len: number, keyAt: (i: number) => RowKey): number[] {
+  const seen = new Set<RowKey>();
   const keep: number[] = [];
   for (let i = 0; i < len; i++) {
     const key = keyAt(i);
@@ -139,8 +158,7 @@ function distinctIndexOrder(len: number, keyAt: (i: number) => string): number[]
 
 export function distinctRows(f: FrameValue, columns?: readonly string[]): FrameValue {
   const cols = (columns ?? f.columns.map((c) => c.name)).map((n) => requireColumn(f, n));
-  return reorderRows(f, distinctIndexOrder(frameRowCount(f),
-    (i) => JSON.stringify(cols.map((c) => encodeCell(cellAt(c, i))))));
+  return reorderRows(f, distinctIndexOrder(frameRowCount(f), rowKeyer(cols)));
 }
 
 export function distinctColumnValues(
@@ -174,7 +192,8 @@ export function sampleFrame(f: FrameValue, n: number): FrameValue {
 
 function filterValueToNumber(value: FrameCell, type: FrameColType): number | null {
   if (type === "logical") {
-    const b = coerceLogical(value);
+    const b = logicalOrTypeError(value, "Filter");
+    if (isSolError(b)) throw b;
     return b === null ? null : b ? 1 : 0;
   }
   if (typeof value === "number") return Number.isFinite(value) ? value : null;
@@ -188,7 +207,7 @@ function filterValueToNumber(value: FrameCell, type: FrameColType): number | nul
 
 export const TEXT_FILTER_OPS: ReadonlySet<FilterOp> = new Set(["contains", "startsWith", "endsWith"]);
 
-const TEXT_OP_LABEL: Record<string, string> = {
+export const TEXT_OP_LABEL: Record<string, string> = {
   contains: "Contains", startsWith: "Starts with", endsWith: "Ends with",
 };
 
@@ -210,34 +229,50 @@ export function requireTextList(op: FilterOp, type: FrameColType): void {
 }
 
 export function passesFilter(cell: FrameCell, op: FilterOp, value: FrameCell, type: FrameColType, matchCase: boolean): boolean {
-  if (op === "listContains" || op === "listContainsAny" || op === "listContainsAll" || op === "listEmpty") return false;
-  if (op === "iserror")  return isSolError(cell);
-  if (op === "noterror") return !isSolError(cell);
-  if (op === "isblank")  return cell === null;
-  if (op === "notblank") return cell !== null;
-  if (cell === null || isSolError(cell)) return false;
-  if (value === null) return false;
+  return compileFilter(op, value, type, matchCase)(cell);
+}
+
+/** Hoists the per-condition work (case folding, parsing the value) out of the row loop. */
+export function compileFilter(op: FilterOp, value: FrameCell, type: FrameColType, matchCase: boolean): (cell: FrameCell) => boolean {
+  if (op === "listContains" || op === "listContainsAny" || op === "listContainsAll" || op === "listEmpty") return () => false;
+  if (op === "iserror")  return (cell) => isSolError(cell);
+  if (op === "noterror") return (cell) => !isSolError(cell);
+  if (op === "isblank")  return (cell) => cell === null;
+  if (op === "notblank") return (cell) => cell !== null;
+  if (value === null) return () => false;
   const fold = (s: string) => (matchCase ? s : s.toLowerCase());
-  if (op === "contains")   return fold(String(cell)).includes(fold(String(value)));
-  if (op === "startsWith") return fold(String(cell)).startsWith(fold(String(value)));
-  if (op === "endsWith")   return fold(String(cell)).endsWith(fold(String(value)));
-  if (type === "string") {
-    if (op === "eq")  return fold(String(cell)) === fold(String(value));
-    if (op === "neq") return fold(String(cell)) !== fold(String(value));
-    return compareOp(op, compareStrings(String(cell), String(value)), 0);
+  const absent = (cell: FrameCell): cell is null | SolError => cell === null || isSolError(cell);
+  if (op === "contains" || op === "startsWith" || op === "endsWith") {
+    const needle = fold(String(value));
+    if (op === "contains")   return (cell) => !absent(cell) && fold(String(cell)).includes(needle);
+    if (op === "startsWith") return (cell) => !absent(cell) && fold(String(cell)).startsWith(needle);
+    return (cell) => !absent(cell) && fold(String(cell)).endsWith(needle);
   }
-  const x = type === "logical" ? (cell ? 1 : 0) : Number(cell);
-  const y = filterValueToNumber(value, type);
-  if (y === null) return false;
-  return compareOp(op, x, y);
+  if (type === "string") {
+    const target = String(value);
+    const folded = fold(target);
+    if (op === "eq")  return (cell) => !absent(cell) && fold(String(cell)) === folded;
+    if (op === "neq") return (cell) => !absent(cell) && fold(String(cell)) !== folded;
+    return (cell) => !absent(cell) && compareOp(op, compareStrings(String(cell), target), 0);
+  }
+  let y: number | null | undefined;
+  return (cell) => {
+    if (absent(cell)) return false;
+    if (type === "logical" && typeof cell !== "boolean") return false;
+    const x = type === "logical" ? (cell ? 1 : 0) : Number(cell);
+    if (y === undefined) y = filterValueToNumber(value, type);
+    if (y === null) return false;
+    return compareOp(op, x, y);
+  };
 }
 
 export function filterRows(f: FrameValue, column: string, op: FilterOp, value: FrameCell, matchCase = false): FrameValue {
   const col = requireColumn(f, column);
   requireTextColumn(op, col.type, column);
+  const pass = compileFilter(op, value, col.type, matchCase);
   const keep: number[] = [];
-  for (let i = 0; i < frameRowCount(f); i++) {
-    if (passesFilter(cellAt(col, i), op, value, col.type, matchCase)) keep.push(i);
+  for (let i = 0, n = frameRowCount(f); i < n; i++) {
+    if (pass(cellAt(col, i))) keep.push(i);
   }
   return reorderRows(f, keep);
 }
@@ -246,11 +281,13 @@ export function filterRowsMulti(f: FrameValue, combine: FilterCombine, condition
   if (conditions.length === 0) return complement ? reorderRows(f, []) : f;
   const cols = conditions.map((c) => requireColumn(f, c.column));
   for (let j = 0; j < conditions.length; j++) requireTextColumn(conditions[j].op, cols[j].type, conditions[j].column);
+  const preds = conditions.map((c, j) => compileFilter(c.op, c.value, cols[j].type, c.matchCase ?? false));
   const keep: number[] = [];
-  for (let i = 0; i < frameRowCount(f); i++) {
-    const pass = (c: FilterCond, j: number) =>
-      passesFilter(cellAt(cols[j], i), c.op, c.value, cols[j].type, c.matchCase ?? false);
-    const kept = combine === "and" ? conditions.every(pass) : conditions.some(pass);
+  for (let i = 0, n = frameRowCount(f); i < n; i++) {
+    let kept = combine === "and";
+    for (let j = 0; j < preds.length; j++) {
+      if (preds[j](cellAt(cols[j], i)) !== kept) { kept = !kept; break; }
+    }
     if (kept !== complement) keep.push(i);
   }
   return reorderRows(f, keep);
@@ -273,7 +310,10 @@ function cubeScalarColumn(cube: CubeValue, name: string): FrameColumn {
       throw solError("#SHAPE!", `"${name}" has list or table cells; this needs a scalar column`);
     }
   }
-  return inferColumn(name, col.cells);
+  // Read as a Frame reads it, so a declared type, unit and format hold.
+  const f = flatCubeToFrame(cube, [name]);
+  if (isSolError(f)) throw f;
+  return f.columns[0];
 }
 
 export function passesListFilter(cell: CubeCell, op: FilterOp, value: FrameCell, matchCase: boolean): boolean {
@@ -314,15 +354,15 @@ export function filterCube(cube: CubeValue, combine: FilterCombine, conditions: 
     }
     const col = cubeScalarColumn(cube, c.column);
     requireTextColumn(c.op, col.type, c.column);
-    return { list: false as const, col };
+    return { list: false as const, col, pass: compileFilter(c.op, c.value, col.type, c.matchCase ?? false) };
   });
   const keep: number[] = [];
-  for (let i = 0; i < cubeRowCount(cube); i++) {
+  for (let i = 0, n = cubeRowCount(cube); i < n; i++) {
     const passOne = (c: FilterCond, j: number) => {
       const r = resolved[j];
       return r.list
         ? passesListFilter(r.cells[i] ?? null, c.op, c.value, c.matchCase ?? false)
-        : passesFilter(cellAt(r.col, i), c.op, c.value, r.col.type, c.matchCase ?? false);
+        : r.pass(cellAt(r.col, i));
     };
     const kept = combine === "and" ? conditions.every(passOne) : conditions.some(passOne);
     if (kept !== complement) keep.push(i);
@@ -462,10 +502,11 @@ export function aggUnitPlan(op: AggOp, unit: ColumnUnit | undefined, readingScal
 export function groupByFrame(f: FrameValue, keys: readonly string[], aggs: readonly AggSpec[]): FrameValue {
   const keyCols = keys.map((n) => requireColumn(f, n));
   const aggCols = aggs.map((a) => ({ spec: a, col: requireColumn(f, a.column) }));
-  const buckets = new Map<string, number[]>();
-  const keyOrder: string[] = [];
-  for (let i = 0; i < frameRowCount(f); i++) {
-    const key = JSON.stringify(keyCols.map((c) => encodeCell(cellAt(c, i))));
+  const buckets = new Map<RowKey, number[]>();
+  const keyOrder: RowKey[] = [];
+  const keyAt = rowKeyer(keyCols);
+  for (let i = 0, n = frameRowCount(f); i < n; i++) {
+    const key = keyAt(i);
     let rows = buckets.get(key);
     if (!rows) { rows = []; buckets.set(key, rows); keyOrder.push(key); }
     rows.push(i);
@@ -681,12 +722,12 @@ export function crossJoinFrames(left: FrameValue, right: FrameValue): FrameValue
   left.columns.forEach((c, ci) => {
     const values: FrameCell[] = [];
     for (let i = 0; i < ln; i++) { const v = cellAt(c, i); for (let j = 0; j < rn; j++) values.push(v); }
-    out.push({ name: names[ci], type: c.type, values });
+    out.push({ ...withoutRaw(c), name: names[ci], values });
   });
   right.columns.forEach((c, ri) => {
     const values: FrameCell[] = [];
     for (let i = 0; i < ln; i++) for (let j = 0; j < rn; j++) values.push(cellAt(c, j));
-    out.push({ name: names[left.columns.length + ri], type: c.type, values });
+    out.push({ ...withoutRaw(c), name: names[left.columns.length + ri], values });
   });
   return frame(out);
 }
@@ -1086,7 +1127,8 @@ export function pivotFrame(f: FrameValue, spec: PivotSpec): FrameValue {
   if (rowValSort >= 0 && rowValSort < V && R > 1) {
     const score = (r: number) => sortKey(Array.from({ length: C }, (_, c) => cells[rowValSort][r][c]).flat(), rowValSort);
     const cmp = byKey(rs < 0);
-    const perm = rowLeaves.map((_, r) => r).sort((x, y) => cmp(score(x), score(y)));
+    const scores = rowLeaves.map((_, r) => score(r));
+    const perm = rowLeaves.map((_, r) => r).sort((x, y) => cmp(scores[x], scores[y]));
     rowLeaves = perm.map((r) => rowLeaves[r]);
     for (let v = 0; v < V; v++) cells[v] = perm.map((r) => cells[v][r]);
   }
@@ -1094,20 +1136,30 @@ export function pivotFrame(f: FrameValue, spec: PivotSpec): FrameValue {
   if (colValSort >= 0 && colValSort < V && C > 1) {
     const score = (c: number) => sortKey(Array.from({ length: R }, (_, r) => cells[colValSort][r][c]).flat(), colValSort);
     const cmp = byKey(cs < 0);
-    const perm = colLeaves.map((_, c) => c).sort((x, y) => cmp(score(x), score(y)));
+    const scores = colLeaves.map((_, c) => score(c));
+    const perm = colLeaves.map((_, c) => c).sort((x, y) => cmp(scores[x], scores[y]));
     colLeaves = perm.map((c) => colLeaves[c]);
     for (let v = 0; v < V; v++) for (let r = 0; r < R; r++) cells[v][r] = perm.map((c) => cells[v][r][c]);
   }
   const collect = (v: number, rset: readonly number[], cset: readonly number[]): FrameCell[] => {
     const acc: FrameCell[] = [];
-    for (const r of rset) for (const c of cset) acc.push(...cells[v][r][c]);
+    for (const r of rset) for (const c of cset) for (const x of cells[v][r][c]) acc.push(x);
     return acc;
   };
   const allRows = rowLeaves.map((_, i) => i), allCols = colLeaves.map((_, i) => i);
-  const parentOf = (leaves: FrameCell[][], idx: number): number[] => {
-    const t = leaves[idx]; if (t.length <= 1) return leaves.map((_, i) => i);
-    const pk = tupleKey(t.slice(0, t.length - 1));
-    return leaves.map((lt, i) => (tupleKey(lt.slice(0, lt.length - 1)) === pk ? i : -1)).filter((i) => i >= 0);
+  const siblingsOf = (leaves: FrameCell[][], all: number[]): number[][] => {
+    const parentKeys = leaves.map((t) => tupleKey(t.slice(0, t.length - 1)));
+    const groups = new Map<string, number[]>();
+    parentKeys.forEach((k, i) => { const g = groups.get(k); if (g) g.push(i); else groups.set(k, [i]); });
+    return leaves.map((t, i) => (t.length <= 1 ? all : groups.get(parentKeys[i])!));
+  };
+  let rowSiblings: number[][] | null = null, colSiblings: number[][] | null = null;
+  const denominators = valCols.map(() => new Map<readonly number[], Map<readonly number[], FrameCell>>());
+  const denominator = (v: number, dr: readonly number[], dc: readonly number[]): FrameCell => {
+    let byCol = denominators[v].get(dr);
+    if (!byCol) { byCol = new Map(); denominators[v].set(dr, byCol); }
+    if (!byCol.has(dc)) byCol.set(dc, sumGroup(collect(v, dr, dc)));
+    return byCol.get(dc)!;
   };
 
   const cellValue = (v: number, rset: number[], cset: number[]): FrameCell => {
@@ -1120,9 +1172,9 @@ export function pivotFrame(f: FrameValue, spec: PivotSpec): FrameValue {
     if (relativeTo === 0) dr = allRows;
     else if (relativeTo === 1) dc = allCols;
     else if (relativeTo === 2) { dr = allRows; dc = allCols; }
-    else if (relativeTo === 3) dc = cset.length === 1 ? parentOf(colLeaves, cset[0]) : allCols;
-    else if (relativeTo === 4) dr = rset.length === 1 ? parentOf(rowLeaves, rset[0]) : allRows;
-    const den = sumGroup(collect(v, dr, dc));
+    else if (relativeTo === 3) dc = cset.length === 1 ? (colSiblings ??= siblingsOf(colLeaves, allCols))[cset[0]] : allCols;
+    else if (relativeTo === 4) dr = rset.length === 1 ? (rowSiblings ??= siblingsOf(rowLeaves, allRows))[rset[0]] : allRows;
+    const den = denominator(v, dr, dc);
     if (isSolError(den)) return den;
     return (den as number) === 0 ? null : (num as number) / (den as number);
   };
@@ -1182,7 +1234,7 @@ export function nestFrame(f: FrameValue, keyColumns: readonly string[], nestedNa
   }
   const names = makeHeaders([...keyColumns, nestedName.trim() || "items"], keyColumns.length + 1);
   const keyOut: CubeColumn[] = keyCols.map((c, k) => ({
-    name: names[k], type: c.type, cells: order.map((key) => cellAt(c, buckets.get(key)![0])),
+    name: names[k], type: c.type, ...(c.format ? { format: c.format } : {}), cells: order.map((key) => cellAt(c, buckets.get(key)![0])),
   }));
   const nestedCells: CubeCell[] = order.map((key) => {
     const rowIdx = buckets.get(key)!;
@@ -1225,7 +1277,7 @@ export function unnestCube(c: CubeValue, nestedColumn: string): FrameValue | Cub
       else for (const item of items) { pushParent(); explodedL.push(item ?? null); }
     }
     return frame([
-      ...flatCols.map((fc, k) => ({ ...inferColumn(fc.name, flatValsL[k]), name: fc.name })),
+      ...flatCols.map((fc, k) => ({ ...inferColumn(fc.name, flatValsL[k]), name: fc.name, ...(fc.format ? { format: fc.format } : {}) })),
       { ...inferColumn(nested.name, explodedL), name: nested.name },
     ]);
   }
@@ -1252,8 +1304,8 @@ export function unnestCube(c: CubeValue, nestedColumn: string): FrameValue | Cub
       flatCols.length + childCubeCols.length,
     );
     return cubeFromColumns([
-      ...flatCols.map((fc, k) => ({ name: namesC[k], cells: flatValsC[k], ...(fc.type ? { type: fc.type } : {}) })),
-      ...childCubeCols.map((cc, k) => ({ name: namesC[flatCols.length + k], cells: childValsC[k], ...(cc.type ? { type: cc.type } : {}) })),
+      ...flatCols.map((fc, k) => ({ name: namesC[k], cells: flatValsC[k], ...(fc.type ? { type: fc.type } : {}), ...(fc.format ? { format: fc.format } : {}) })),
+      ...childCubeCols.map((cc, k) => ({ name: namesC[flatCols.length + k], cells: childValsC[k], ...(cc.type ? { type: cc.type } : {}), ...(cc.format ? { format: cc.format } : {}) })),
     ]);
   }
 
@@ -1278,14 +1330,21 @@ export function unnestCube(c: CubeValue, nestedColumn: string): FrameValue | Cub
     flatCols.length + childCols.length,
   );
   return frame([
-    ...flatCols.map((_, k) => ({ ...inferColumn(names[k], flatVals[k]), name: names[k] })),
-    ...childCols.map((cc, k) => ({ name: names[flatCols.length + k], type: cc.type, values: childVals[k] })),
+    ...flatCols.map((fc, k) => ({ ...inferColumn(names[k], flatVals[k]), name: names[k], ...(fc.format ? { format: fc.format } : {}) })),
+    ...childCols.map((cc, k) => ({
+      name: names[flatCols.length + k], type: cc.type, values: childVals[k],
+      ...(cc.unit ? { unit: cc.unit } : {}), ...(cc.format ? { format: cc.format } : {}),
+    })),
   ]);
 }
 
 // ─── Frame lookup (XLOOKUP / VLOOKUP over a table) ──────────────────────────────
 function lookupNeedle(lookup: string, type: FrameColType): FrameCell {
-  if (type === "logical") return !!coerceLogical(lookup);
+  if (type === "logical") {
+    const b = logicalOrTypeError(lookup, "Lookup");
+    if (isSolError(b)) throw b;
+    return b;
+  }
   if (type === "date") {
     const t = lookup.trim();
     return /^-?\d+(\.\d+)?$/.test(t) ? Number(t) : parseDateToSerial(t);
@@ -1354,7 +1413,7 @@ export function frameRowAt(f: FrameValue, i: number): FrameValue {
 
 export function cubeRowAt(c: CubeValue, i: number): CubeValue {
   return cubeFromColumns(
-    c.columns.map((col) => ({ name: col.name, type: col.type, cells: [i < col.cells.length ? col.cells[i] ?? null : null] })),
+    c.columns.map((col) => ({ ...col, cells: [i < col.cells.length ? col.cells[i] ?? null : null] })),
   );
 }
 
@@ -1381,12 +1440,18 @@ export function appendFrames(frames: readonly FrameValue[]): FrameValue {
   }
   return frame(names.map((name) => {
     const values: FrameCell[] = [];
+    const cols: FrameColumn[] = [];
     for (const f of frames) {
       const col = f.columns.find((c) => c.name === name);
+      if (col) cols.push(col);
       const rows = frameRowCount(f);
       for (let i = 0; i < rows; i++) values.push(col ? cellAt(col, i) : null);
     }
-    return { name, type: typeOf.get(name)!, values };
+    // A unit or format every frame holding the column agrees on carries over; any disagreement drops it.
+    const unit = cols.every((c) => sameColumnUnit(c.unit, cols[0].unit)) ? cols[0].unit : undefined;
+    const fmt = (c: FrameColumn) => JSON.stringify(c.format ?? null);
+    const format = cols.every((c) => fmt(c) === fmt(cols[0])) ? cols[0].format : undefined;
+    return { name, type: typeOf.get(name)!, values, ...(unit ? { unit } : {}), ...(format ? { format } : {}) };
   }));
 }
 
@@ -1397,7 +1462,7 @@ export function bindColumns(frames: readonly FrameValue[]): FrameValue {
   return frame(all.map((c, i) => {
     const values: FrameCell[] = [];
     for (let r = 0; r < rows; r++) values.push(cellAt(c, r));
-    return { name: names[i], type: c.type, values };
+    return { ...withoutRaw(c), name: names[i], values };
   }));
 }
 
@@ -1462,7 +1527,12 @@ function normalizeColumn(vals: number[], mode: DecisionNormalize): number[] {
   }
   const n = vals.length;
   if (n <= 1) return vals.map(() => 1);
-  return vals.map((v) => vals.filter((o) => o < v).length / (n - 1));
+  const sorted = Float64Array.from(vals).sort();
+  return vals.map((v) => {
+    let lo = 0, hi = n;
+    while (lo < hi) { const mid = (lo + hi) >>> 1; if (sorted[mid] < v) lo = mid + 1; else hi = mid; }
+    return lo / (n - 1);
+  });
 }
 
 // Flattens −0 so a zero contribution under a negative weight never prints "-0".
@@ -1854,18 +1924,32 @@ export interface ColumnProfile {
 }
 
 export function describeColumn(values: readonly unknown[], type: FrameColType | undefined): ColumnProfile {
-  const present = values.filter((v) => v != null);
+  let count = 0, error = 0;
+  const distinctNums = new Set<number>(), distinctBools = new Set<boolean>(), distinctText = new Set<string>();
+  for (const v of values) {
+    if (v == null) continue;
+    count++;
+    if (isSolError(v)) error++;
+    else if (typeof v === "number") distinctNums.add(v);
+    else if (typeof v === "boolean") distinctBools.add(v);
+    else distinctText.add(String(v));
+  }
   const profile: ColumnProfile = {
-    count: present.length,
-    blank: values.length - present.length,
-    error: present.filter((v) => isSolError(v)).length,
-    distinct: new Set(present.filter((v) => !isSolError(v)).map((v) => (typeof v === "number" ? `#${v}` : typeof v === "boolean" ? `b${v}` : `s${String(v)}`))).size,
+    count,
+    blank: values.length - count,
+    error,
+    distinct: distinctNums.size + distinctBools.size + distinctText.size,
     mean: null, std: null, min: null, q25: null, median: null, q75: null, max: null,
   };
   if (type === "number" || type === "date") {
     const nums = values.filter((v): v is number => typeof v === "number" && Number.isFinite(v));
     const stat = (op: "avg" | "stdev" | "min" | "max"): number | null => { const r = aggregate(op, nums); return typeof r === "number" ? r : null; };
-    const pct = (p: number): number | null => { const r = percentile(nums, p, false); return typeof r === "number" ? r : null; };
+    const sorted = type === "number" ? [...nums].sort((a, b) => a - b) : [];
+    const pct = (p: number): number | null => {
+      if (sorted.length === 0) return null;
+      const r = percentileOf(sorted, p, false);
+      return Number.isFinite(r) ? r : null;
+    };
     profile.mean = type === "number" ? stat("avg") : null;
     profile.std = type === "number" ? stat("stdev") : null;
     profile.min = stat("min");
@@ -1919,8 +2003,9 @@ export function correlationMatrix(f: FrameValue, method: CorrMethod): FrameValue
       : covariance(xs, ys, true);
     return typeof v === "number" ? v : null;
   };
-  const out: FrameColumn[] = [{ name: "column", type: "string", values: cols.map((c) => c.name) }];
-  cols.forEach((cj, j) => out.push({ name: cj.name, type: "number", values: cols.map((_, i) => cell(i, j)) }));
+  const names = makeHeaders(["column", ...cols.map((c) => c.name)], cols.length + 1);
+  const out: FrameColumn[] = [{ name: names[0], type: "string", values: cols.map((c) => c.name) }];
+  cols.forEach((_, j) => out.push({ name: names[j + 1], type: "number", values: cols.map((_, i) => cell(i, j)) }));
   return { __frame: true, columns: out };
 }
 
@@ -2003,9 +2088,10 @@ export function windowFrame(f: FrameValue, spec: WindowSpec): FrameValue {
   const orderCol = spec.orderBy ? requireColumn(f, spec.orderBy) : null;
   const valCol = WINDOW_FN_NEEDS_COLUMN.has(spec.fn) ? requireColumn(f, spec.column ?? "") : null;
   const N = Math.max(1, Math.round(spec.n ?? 1));
-  const parts = new Map<string, number[]>();
+  const parts = new Map<RowKey, number[]>();
+  const keyAt = rowKeyer(keyCols);
   for (let i = 0; i < n; i++) {
-    const k = JSON.stringify(keyCols.map((c) => encodeCell(cellAt(c, i))));
+    const k = keyAt(i);
     const arr = parts.get(k); if (arr) arr.push(i); else parts.set(k, [i]);
   }
   const out: FrameCell[] = new Array<FrameCell>(n).fill(null);
@@ -2020,13 +2106,13 @@ export function windowFrame(f: FrameValue, spec: WindowSpec): FrameValue {
     let ordered = rows;
     if (orderCol) {
       const dir = spec.orderDir === "desc" ? -1 : 1;
-      ordered = [...rows].sort((i, j) => {
-        const a = cellAt(orderCol, i), b = cellAt(orderCol, j);
-        const aBlank = blankKey(a), bBlank = blankKey(b);
-        if (aBlank || bBlank) return aBlank === bBlank ? i - j : aBlank ? 1 : -1;
-        const c = cmp(a, b) * dir;
+      const keyed: number[] = [], blanks: number[] = [];
+      for (const i of rows) (blankKey(cellAt(orderCol, i)) ? blanks : keyed).push(i);
+      keyed.sort((i, j) => {
+        const c = cmp(orderCol.values[i], orderCol.values[j]) * dir;
         return c !== 0 ? c : i - j;
       });
+      ordered = keyed.concat(blanks);
     }
     const vals = valCol ? ordered.map((i) => cellAt(valCol, i)) : [];
     const err = vals.find(isSolError);
@@ -2090,10 +2176,17 @@ export function windowFrame(f: FrameValue, spec: WindowSpec): FrameValue {
         case "rolling_sum": case "rolling_avg": case "rolling_min": case "rolling_max": {
           if (err) { v = err; break; }
           if (p < N - 1 || x === null) { v = null; break; }
-          const win = nums.slice(p - N + 1, p + 1).filter((y): y is number => y !== null);
-          v = spec.fn === "rolling_sum" ? win.reduce((a, b) => a + b, 0)
-            : spec.fn === "rolling_avg" ? win.reduce((a, b) => a + b, 0) / win.length
-            : spec.fn === "rolling_min" ? minOf(win) : maxOf(win);
+          let sum = 0, count = 0, lo = Infinity, hi = -Infinity;
+          for (let k = p - N + 1; k <= p; k++) {
+            const y = nums[k];
+            if (y === null) continue;
+            sum += y; count++;
+            if (y < lo) lo = y;
+            if (y > hi) hi = y;
+          }
+          v = spec.fn === "rolling_sum" ? sum
+            : spec.fn === "rolling_avg" ? sum / count
+            : spec.fn === "rolling_min" ? lo : hi;
           break;
         }
         case "group_sum": case "group_avg": case "group_min": case "group_max": case "group_count": v = groupValue; break;
