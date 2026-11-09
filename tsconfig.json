@@ -20,6 +20,11 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
+    "paths": {
+      "@solenoid/gantt-layout": [
+        "./packages/gantt-layout/src/index.ts"
+      ]
+    },
     "rootDirs": [
       "src/graph",
       "obsidian-plugin/src/shims"

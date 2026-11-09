@@ -76,8 +76,8 @@ A bare `{{ name }}` on a List, Matrix, Frame or Cube property is that property's
 
 ## Source
 
-The source in `src/` and `obsidian-plugin/` is a snapshot exported from [bubba8587/solenoid](https://github.com/bubba8587/solenoid), where the plugin is developed, because the chips and editors are Solenoid's own components; `source.json` names the commit. `npm ci && npm run build` builds `dist/` from it, and each release's files carry a GitHub build provenance attestation.
+The source in `src/`, `obsidian-plugin/`, `packages/` and `crates/` is a snapshot exported from [bubba8587/solenoid](https://github.com/bubba8587/solenoid), where the plugin is developed, because the chips and editors are Solenoid's own components; `source.json` names the commit. The values are read and formatted by Solenoid's Rust core, compiled to WebAssembly from `crates/` and inlined in `main.js`. `npm ci && npm run build` builds `dist/` from it (the Rust toolchain in `rust-toolchain.toml` and `wasm-bindgen-cli` at the version `crates/solenoid-graph/Cargo.toml` pins), and each release's files carry a GitHub build provenance attestation.
 
 ## License
 
-MIT. The bundle's third-party licenses (React, chrono-node, PapaParse, the Atkinson Hyperlegible fonts) are in [`THIRD-PARTY-LICENSES.txt`](THIRD-PARTY-LICENSES.txt).
+MIT. The bundle's third-party licenses (React, DOMPurify, Knap, the Atkinson Hyperlegible fonts) are in [`THIRD-PARTY-LICENSES.txt`](THIRD-PARTY-LICENSES.txt).

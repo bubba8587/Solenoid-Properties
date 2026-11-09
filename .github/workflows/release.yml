@@ -5,7 +5,8 @@
 # as a run artifact: a check that the source builds, with no release made.
 #
 # The source in src/ and obsidian-plugin/ is a snapshot exported from bubba8587/solenoid, where
-# the plugin is developed (source.json names the commit). Nothing is edited here by hand.
+# the plugin is developed (source.json names the commit), with the Rust in crates/ the wasm engine
+# is built from. Nothing is edited here by hand.
 name: Release
 
 on:
@@ -49,6 +50,16 @@ jobs:
         with:
           node-version: "22"
           cache: npm
+
+      # The wasm engine is built here from crates/: the Rust that rust-toolchain.toml pins, and the
+      # wasm-bindgen that crates/solenoid-graph/Cargo.toml pins.
+      - name: Install Rust
+        run: rustup toolchain install
+
+      - name: Install wasm-bindgen
+        run: |
+          version=$(grep -oP '^wasm-bindgen = "=\K[0-9.]+' crates/solenoid-graph/Cargo.toml)
+          cargo install wasm-bindgen-cli --version "$version" --locked
 
       - name: Install
         run: npm ci

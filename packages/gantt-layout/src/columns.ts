@@ -1,0 +1,28 @@
+// [[C69]] ganttPackages, [[B14]] oneDesignSystem
+
+import type { GanttPayload } from "./payload";
+import type { GridColumn } from "./frame";
+
+const DEFAULTS: GridColumn[] = [
+  { key: "name", label: "Task", width: 190, align: "left" },
+  { key: "start", label: "Start", width: 94, align: "left" },
+  { key: "finish", label: "Finish", width: 94, align: "left" },
+  { key: "duration", label: "Days", width: 54, align: "right" },
+  { key: "float", label: "Float", width: 54, align: "right" },
+  { key: "complete", label: "%", width: 46, align: "right" },
+  { key: "predecessors", label: "Predecessors", width: 150, align: "left" },
+];
+
+/** Widths are sized for 12px text and scale with `fontScale`, so a larger face still fits a DD-MMM-YYYY date. */
+export function buildColumns(payload: GanttPayload, fontScale = 1): GridColumn[] {
+  const want = payload.view.columns ?? ["name", "start", "finish", "duration"];
+  const byKey = new Map(DEFAULTS.map((c) => [c.key, c]));
+  const cols: GridColumn[] = [];
+  for (const key of want) {
+    const c = byKey.get(key);
+    if (c && !cols.some((x) => x.key === key)) cols.push({ ...c });
+  }
+  if (!cols.some((c) => c.key === "name")) cols.unshift({ ...DEFAULTS[0] });
+  if (fontScale !== 1) for (const c of cols) c.width = Math.round(c.width * fontScale);
+  return cols;
+}

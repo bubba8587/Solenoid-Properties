@@ -1,0 +1,89 @@
+// [[C69]] ganttPackages, [[C100]] chartIsAValue
+
+import type { GanttPayload } from "./payload";
+import type { RenderFrame } from "./frame";
+import { buildScale } from "./scale";
+import { buildRows, DEFAULT_ROW_HEIGHT } from "./rows";
+import { buildBars } from "./bars";
+import { buildLinks } from "./links";
+import { buildColumns } from "./columns";
+import { buildHistogram } from "./histogram";
+
+export interface LayoutOptions {
+  width: number;
+  height?: number;
+  rowHeight?: number;
+  gridWidth?: number;
+  scrollTop?: number;
+  viewportHeight?: number;
+}
+
+export function layoutGantt(payload: GanttPayload, opts: LayoutOptions): RenderFrame {
+  const rowHeight = opts.rowHeight ?? DEFAULT_ROW_HEIGHT;
+  const rows = buildRows(payload, rowHeight);
+  const scale = buildScale(payload, opts.width);
+  const cull =
+    opts.scrollTop != null && (opts.viewportHeight ?? opts.height) != null
+      ? { top: opts.scrollTop, height: (opts.viewportHeight ?? opts.height)! }
+      : undefined;
+  const bars = buildBars(payload, rows, scale, cull);
+  const links = buildLinks(payload, rows, bars, scale, rowHeight, cull);
+
+  const headerHeight = scale.tiers.length * TIER_HEIGHT;
+  const contentHeight = rows.length ? rows[rows.length - 1].y + rows[rows.length - 1].h : 0;
+
+  const shading = buildShading(payload, scale);
+  const gridColumns = buildGridLines(scale);
+  const todayX = payload.today != null && payload.view.today !== false ? xForSerial(payload.today, scale) : null;
+  const statusX =
+    payload.statusDate != null && payload.view.status !== false ? xForSerial(payload.statusDate, scale) : null;
+
+  return {
+    scale,
+    rows,
+    bars,
+    links,
+    shading,
+    gridColumns,
+    todayX: inWindow(todayX, scale) ? todayX : null,
+    statusX: inWindow(statusX, scale) ? statusX : null,
+    width: scale.pxPerDay * (scale.to - scale.from),
+    contentHeight,
+    headerHeight,
+    columns: buildColumns(payload),
+    histogram: payload.view.histogram ? buildHistogram(payload, scale) : undefined,
+  };
+}
+
+export const TIER_HEIGHT = 22;
+
+export function xForSerial(serial: number, scale: { from: number; pxPerDay: number }): number {
+  return (serial - scale.from) * scale.pxPerDay;
+}
+
+function inWindow(x: number | null, scale: { pxPerDay: number; from: number; to: number }): boolean {
+  if (x == null) return false;
+  return x >= 0 && x <= (scale.to - scale.from) * scale.pxPerDay;
+}
+
+function buildShading(payload: GanttPayload, scale: { from: number; to: number; pxPerDay: number }) {
+  if (payload.view.weekends === false) return [];
+  const out: RenderFrame["shading"] = [];
+  const holidays = new Set(payload.holidays);
+  for (const [a, b] of payload.nonWorking) {
+    const from = Math.max(a, scale.from);
+    const to = Math.min(b + 1, scale.to); // b is inclusive
+    if (to <= from) continue;
+    out.push({
+      x: (from - scale.from) * scale.pxPerDay,
+      w: (to - from) * scale.pxPerDay,
+      kind: holidays.has(a) ? "holiday" : "weekend",
+    });
+  }
+  return out;
+}
+
+function buildGridLines(scale: { tiers: { cells: { x: number }[] }[] }): number[] {
+  const primary = scale.tiers[scale.tiers.length - 1];
+  return primary ? primary.cells.map((c) => c.x) : [];
+}
