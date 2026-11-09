@@ -72,6 +72,7 @@ A bare `{{ name }}` on a List, Matrix, Frame or Cube property is that property's
 ## Disclosures
 
 - **Clipboard:** the pop-up editor's Copy, Copy as Markdown and copy-cell actions write to the system clipboard when you use them. The plugin never reads the clipboard.
+- **What's new tab:** a read-only tab about the plugin and the Solenoid app opens once after you install the plugin, once after each update, and once when Solenoid ships new features. Its links open in your browser only when you click them. Turn it off in the plugin's settings (Show what's new after an update), or open it any time with the command Show what's new.
 - **No network access, no telemetry.** The plugin's settings and a Frame's column types are kept in the plugin's own `data.json`.
 
 ## Source
