@@ -1,12 +1,12 @@
 {
   "name": "solenoid-properties",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "private": true,
   "type": "module",
   "description": "List, Matrix, Frame and Cube property types, with Solenoid's chips and table editors.",
   "license": "MIT",
   "scripts": {
-    "build:wasm": "node scripts/build-wasm.mjs",
+    "build:wasm": "node scripts/build-wasm.mjs --plugin",
     "build": "npm run build:wasm && tsrs --noEmit && PLUGIN_OUT=dist VITE_CONFIG_NATIVE_IGNORE_WARNING=true vite build --config obsidian-plugin/vite.config.ts"
   },
   "dependencies": {

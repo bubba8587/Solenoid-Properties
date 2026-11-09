@@ -1,5 +1,5 @@
 {
   "repo": "bubba8587/solenoid",
-  "ref": "08a8296d9158ec751032c94c07df4d5ea71ed5c7",
+  "ref": "2903ec1a846e1844f4fd6541e6e4b170f27e3edc",
   "note": "The snapshot in src/ and obsidian-plugin/ was exported from this commit by scripts/export-plugin-source.mjs."
 }
