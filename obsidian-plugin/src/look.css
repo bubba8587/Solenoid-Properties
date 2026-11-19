@@ -1,4 +1,4 @@
-/* [[C107]] obsidianPlugin */
+/* [[obsidian-plugin]] */
 
 /* ── Tokens ─────────────────────────────────────────────────────────────────── */
 /* No hex here: every color token comes from lookTokens.ts. */
@@ -298,7 +298,7 @@ body {
   --metadata-label-font-weight: 500;
   --metadata-input-text-color: var(--sol-text);
   --metadata-property-background-active: color-mix(in srgb, var(--sol-accent) 8%, transparent);
-  --metadata-property-box-shadow-focus: 0 0 0 1px var(--sol-accent);
+  --metadata-property-box-shadow-focus: 0 0 0 1px var(--sol-accent), 0 0 0 1px var(--sol-accent);
   --metadata-property-radius: 4px;
 
   --input-shadow: none;
@@ -458,13 +458,16 @@ select.dropdown:focus {
   border-radius: 0;
 }
 
-button:not(.clickable-icon):not(.mod-cta):not(.mod-warning) {
+/* A plain button is a sunken pill. The rule weighs no more than a class, so a plugin's own button keeps the shape its
+   view gives it. TaskNotes draws its views' buttons on Obsidian's button variables (a day in the agenda's week strip,
+   a day link, the month title), which the look already sets, and the pill only boxed them: its views are left out. */
+:where(button:not(.clickable-icon):not(.mod-cta):not(.mod-warning):not(.tasknotes-plugin *)) {
   background-color: var(--sol-sunken);
   border: 1px solid var(--sol-border);
   box-shadow: none;
   border-radius: 999px;
 }
-button:not(.clickable-icon):not(.mod-cta):not(.mod-warning):hover {
+:where(button:not(.clickable-icon):not(.mod-cta):not(.mod-warning):not(.tasknotes-plugin *)):hover {
   background-color: var(--sol-raised);
   border-color: var(--sol-border-strong);
 }
@@ -501,7 +504,7 @@ button.mod-warning {
 .menu-item.selected:not(.is-disabled),
 .workspace-drawer-tab-select .workspace-tab-header-inner,
 .workspace-drawer-tab-options-list .workspace-tab-header.is-active .workspace-tab-header-inner {
-  box-shadow: inset 0 0 0 1px var(--sol-full-accent);
+  box-shadow: inset 0 0 0 1px var(--sol-full-accent), inset 0 0 0 1px var(--sol-full-accent);
 }
 /* On an accent wash, nothing stays gray: the picked item's icon, and the picked file's type badge, take the accent. */
 .menu-item.selected:not(.is-disabled) .menu-item-icon,
@@ -636,7 +639,7 @@ button.mod-warning {
 .tree-item-self.has-active-menu,
 .tree-item-self.has-focus,
 body:not(.is-phone) .workspace-leaf.mod-active .tree-item-self.has-focus {
-  box-shadow: inset 0 0 0 1px var(--sol-accent);
+  box-shadow: inset 0 0 0 1px var(--sol-accent), inset 0 0 0 1px var(--sol-accent);
 }
 
 .vertical-tab-header-group-title,
@@ -715,6 +718,44 @@ body:not(.is-phone) .modal .modal-title {
   border-color: var(--sol-overlay-border);
   border-width: 2px 0 0 2px;
   border-style: solid;
+}
+
+/* ── A 1px stroke round a corner ───────────────────────────────────────────── */
+/* A 1px line round a curve only half covers each pixel there, and blended that way a light line on a dark ground all
+   but vanishes at the corners: at 1x and 1.5x, so on most Windows and Android screens, a panel's hairline looked
+   bitten off where it turns. Every 1px stroke with round corners is painted twice on the same pixels: the straight runs
+   are unchanged and a corner's half-covered pixels fill in. A border takes an outline 1px inside its edge, which lies
+   exactly on it; a ring drawn as a shadow lists itself twice (above, where it is drawn). */
+.nav-buttons-container,
+.view-actions,
+.canvas-control-group,
+.markdown-rendered pre {
+  outline: 1px solid var(--sol-border);
+  outline-offset: -1px;
+}
+body:not(.is-phone) .modal {
+  outline: 1px solid var(--sol-border);
+  outline-offset: -1px;
+}
+.markdown-rendered blockquote,
+.markdown-rendered table {
+  outline: 1px solid var(--sol-full-accent);
+  outline-offset: -1px;
+}
+.markdown-rendered .markdown-embed,
+.markdown-rendered .file-embed,
+.tasknotes-task-card-note-widget,
+.tasknotes-relationships-widget {
+  outline: 1px solid var(--sol-hairline);
+  outline-offset: -1px;
+}
+a.tag:not(:focus-visible) {
+  outline: var(--tag-border-width) solid var(--tag-border-color);
+  outline-offset: calc(-1 * var(--tag-border-width));
+}
+.multi-select-pill {
+  outline: var(--pill-border-width) solid var(--pill-border-color);
+  outline-offset: calc(-1 * var(--pill-border-width));
 }
 
 /* ── Writing ────────────────────────────────────────────────────────────────── */
@@ -943,7 +984,7 @@ kbd {
   overflow: hidden;
   padding: 0 0 var(--size-4-2);
   border-radius: 8px;
-  box-shadow: inset 0 0 0 1px var(--sol-card-stroke);
+  box-shadow: inset 0 0 0 1px var(--sol-card-stroke), inset 0 0 0 1px var(--sol-card-stroke);
 }
 /* A node card's header: the band at the header tint, under a 2px cap of the full accent round its top and sides, over
    the card's divider (nodeCard.css: __frame-cap, __frame-divider). */
@@ -1051,7 +1092,8 @@ kbd {
   stroke-width: 2.25px;
 }
 .metadata-property:focus-within {
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--sol-type) var(--sol-mix-emphasis), var(--sol-border));
+  --sol-ring: color-mix(in srgb, var(--sol-type) var(--sol-mix-emphasis), var(--sol-border));
+  box-shadow: 0 0 0 1px var(--sol-ring), 0 0 0 1px var(--sol-ring);
 }
 .metadata-property:has(> [data-property-type="number"]) { --sol-type: var(--sol-number); --sol-type-ink: var(--sol-ink-on-number); }
 .metadata-property:has(> [data-property-type="text"]) { --sol-type: var(--sol-string); --sol-type-ink: var(--sol-ink-on-string); }
@@ -1136,3 +1178,46 @@ kbd {
 .graph-view.color-line-highlight { color: var(--sol-accent); }
 .graph-view.color-circle { color: var(--sol-accent); }
 .graph-view.color-text { color: var(--sol-text-dim); }
+
+/* ── TaskNotes ──────────────────────────────────────────────────────────────── */
+/* TaskNotes draws its views, cards and dialogs on Obsidian's variables, which the look already sets; these rules only
+   undo where a look rule meant for Obsidian's own chrome lands on TaskNotes' (the plain button's pill above too). */
+
+/* A heading in a TaskNotes view is the view's title (the calendar's date range), not a note's heading, so it stays the
+   text color rather than a heading's hue. */
+.tasknotes-plugin {
+  --h1-color: currentColor;
+  --h2-color: currentColor;
+  --h3-color: currentColor;
+  --h4-color: currentColor;
+  --h5-color: currentColor;
+  --h6-color: currentColor;
+}
+/* A TaskNotes dialog has no padding of its own and lays its header over the top of its content, so the dialog
+   header's pull into the padding put the title on the dialog's edge with a divider stopping at the title. The title
+   keeps TaskNotes' own place, and the header no divider: one spanning the dialog would cut through the first field. */
+body:not(.is-phone) .tasknotes-plugin.tn-modal > .modal-header:has(> .modal-title:not(:empty)) {
+  margin: 0;
+  padding: var(--size-4-3) var(--size-4-4) 0;
+  border-bottom: none;
+}
+/* The mini calendar's empty corner over the week numbers took the sidebar's fill, a dark square in dark mode. */
+.tasknotes-plugin .mini-calendar-view__week-header:empty {
+  background: none;
+}
+/* In a note, the task card TaskNotes puts on a task and its relationships widget are cards on the page, as Properties
+   and embeds are: the surface under one hairline with 8px corners. TaskNotes ruled the task card off with a top line
+   on the canvas and outlined the widget in dashes round a surface-colored board, a box in a box. */
+.tasknotes-task-card-note-widget,
+.tasknotes-relationships-widget {
+  background-color: var(--sol-surface);
+  border: 1px solid var(--sol-hairline);
+  border-radius: 8px;
+}
+.tasknotes-task-card-note-widget {
+  padding: var(--size-4-1) var(--size-4-3);
+}
+/* The widget's base sits in a paragraph, whose margin doubled the widget's own padding above and below it. */
+.tasknotes-relationships-widget .relationships__bases-container > p {
+  margin-block: 0;
+}

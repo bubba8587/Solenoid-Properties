@@ -1,6 +1,6 @@
 {
   "name": "solenoid-properties",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "private": true,
   "type": "module",
   "description": "List, Matrix, Frame and Cube property types, with Solenoid's chips and table editors.",
@@ -24,7 +24,7 @@
     "@codemirror/view": "6.43.13",
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
-    "@vitejs/plugin-react": "6.1.2",
+    "@vitejs/plugin-react": "6.2.1",
     "estree-walker": "3.0.3",
     "magic-string": "0.30.21",
     "obsidian": "1.14.4",

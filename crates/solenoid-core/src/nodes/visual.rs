@@ -34,6 +34,7 @@ pub fn run(kind: &str, c: &mut Call) -> Option<Answer> {
         "BoxplotNode" => boxplot(c),
         "CalendarHeatmapNode" => calendar_heatmap(c),
         "QuiverNode" => quiver(c),
+        "UsMapNode" => us_map(c),
         "ChartBuilderNode" => chart_builder(c),
         "ConditionalRegionsNode" => conditional_regions(c),
         _ => return None,
@@ -195,6 +196,15 @@ fn to_radar_scale(v: &str) -> Option<&'static str> {
     }
 }
 
+/// `stacked=True` as pandas writes it piles the series; `percent` (Excel's 100% Stacked) piles each category's share.
+fn to_stacked(v: &str) -> Option<&'static str> {
+    match lower_text(trim_space(v)).as_ref() {
+        "percent" | "100%" | "expand" => Some("percent"),
+        "stacked" | "stack" => Some("stacked"),
+        other => to_bool(other).and_then(|b| b.then_some("stacked")),
+    }
+}
+
 fn to_line_style(v: &str) -> Option<&'static str> {
     match lower_text(trim_space(v)).as_ref() {
         "-" | "solid" => Some("solid"),
@@ -214,6 +224,10 @@ const CMAPS: [&str; 21] = [
 /// A map's own spelling, `_r` kept for a reversed one.
 fn normalize_cmap(text: &str) -> Option<String> {
     let s = trim_space(text);
+    // The theme's own palette: a figure's points cycle its colors where no Color column sets them.
+    if s.eq_ignore_ascii_case("palette") {
+        return Some("palette".to_string());
+    }
     let reversed = s.len() >= 2 && s.is_char_boundary(s.len() - 2) && s[s.len() - 2..].eq_ignore_ascii_case("_r");
     let stem = if reversed { &s[..s.len() - 2] } else { s };
     let lower = lower_text(stem);
@@ -227,8 +241,8 @@ fn is_number_spec(spec: &str) -> bool {
     if s.is_empty() {
         return false;
     }
-    let mut rest = s.strip_prefix('+').unwrap_or(s);
-    rest = rest.strip_prefix(',').unwrap_or(rest);
+    let mut rest = s.trim_prefix('+');
+    rest = rest.trim_prefix(',');
     if let Some(after) = rest.strip_prefix('.') {
         let digits = after.bytes().take_while(u8::is_ascii_digit).count();
         if !(1..=2).contains(&digits) {
@@ -267,10 +281,13 @@ pub(crate) fn parse_chart_options(input: &str) -> Obj {
             }
         };
         match key.as_str() {
-            "title" | "xlabel" | "ylabel" | "color" | "x" | "s" | "c" | "annotate" | "by" => text(&mut o, &key),
+            "title" | "xlabel" | "ylabel" | "color" | "x" | "s" | "c" | "annotate" | "by" | "lat" | "lon" => {
+                text(&mut o, &key)
+            }
             "grid" | "marker" | "annot" | "cbar" => flag(&mut o, &key),
             "pielabels" => word(&mut o, "pielabels", to_pie_labels(val)),
             "radarscale" => word(&mut o, "radarscale", to_radar_scale(val)),
+            "stacked" => word(&mut o, "stacked", to_stacked(val)),
             "linewidth" | "lw" => put_num(&mut o, "linewidth", to_num(val)),
             "markersize" | "ms" => put_num(&mut o, "markersize", to_num(val).filter(|n| *n > 0.0)),
             "alpha" => put_num(&mut o, "alpha", to_num(val)),
@@ -296,6 +313,17 @@ pub(crate) fn parse_chart_options(input: &str) -> Obj {
                 );
             }
             "maxgap" => put_num(&mut o, "maxgap", to_num(val).filter(|n| *n > 0.0)),
+            "period" => word(
+                &mut o,
+                "period",
+                match lower_text(trim_space(val)).as_ref() {
+                    "day" => Some("day"),
+                    "week" => Some("week"),
+                    "month" => Some("month"),
+                    "year" => Some("year"),
+                    _ => None,
+                },
+            ),
             "yscale" => word(
                 &mut o,
                 "yscale",
@@ -408,9 +436,7 @@ fn finite(v: &V) -> Option<f64> {
 
 /// Each cell as shown, a blank as "".
 fn col_strings(col: Option<&Column>) -> Vec<String> {
-    col.map_or_else(Vec::new, |col| {
-        (0..col.values.len()).map(|r| shown_text(col, r, None).unwrap_or_default()).collect()
-    })
+    col.map_or_else(Vec::new, |col| Vec::from_fn(col.values.len(), |r| shown_text(col, r, None).unwrap_or_default()))
 }
 
 /// Each cell as a number, read from its shown text where that is text.
@@ -449,30 +475,28 @@ fn typed_column(name: &str, cells: &[V], rows: usize, known: Option<FrameColType
             FrameColType::String
         }
     });
-    let values = (0..rows)
-        .map(|i| match cells.get(i) {
-            None | Some(V::Null | V::Undef) => V::Null,
-            Some(e @ V::Err(_)) => e.clone(),
-            Some(c) => match ty {
-                FrameColType::String => match c {
-                    V::Str(_) => c.clone(),
-                    _ => V::str(&value_text(c)),
-                },
-                FrameColType::Logical => match c {
-                    V::Bool(_) => c.clone(),
-                    V::Num(n) => V::Bool(*n != 0.0),
-                    V::Str(s) => V::Bool(lower_text(trim_space(s)) == "true"),
-                    _ => V::Bool(false),
-                },
-                FrameColType::Number | FrameColType::Date => match c {
-                    V::Num(_) => c.clone(),
-                    V::Bool(b) => V::Num(f64::from(u8::from(*b))),
-                    V::Str(s) => V::Num(crate::value_kinds::decimal_from_text(s)),
-                    _ => V::Num(f64::NAN),
-                },
+    let values = Vec::from_fn(rows, |i| match cells.get(i) {
+        None | Some(V::Null | V::Undef) => V::Null,
+        Some(e @ V::Err(_)) => e.clone(),
+        Some(c) => match ty {
+            FrameColType::String => match c {
+                V::Str(_) => c.clone(),
+                _ => V::str(&value_text(c)),
             },
-        })
-        .collect();
+            FrameColType::Logical => match c {
+                V::Bool(_) => c.clone(),
+                V::Num(n) => V::Bool(*n != 0.0),
+                V::Str(s) => V::Bool(lower_text(trim_space(s)) == "true"),
+                _ => V::Bool(false),
+            },
+            FrameColType::Number | FrameColType::Date => match c {
+                V::Num(_) => c.clone(),
+                V::Bool(b) => V::Num(f64::from(u8::from(*b))),
+                V::Str(s) => V::Num(crate::value_kinds::decimal_from_text(s)),
+                _ => V::Num(f64::NAN),
+            },
+        },
+    });
     Column { name: name.to_string(), ty, values, unit: None, format: None, raw: None }
 }
 
@@ -677,21 +701,19 @@ fn build_xy(op: &str, raw: &Cv, opts: &Obj) -> Result<Option<Obj>, V> {
     let text = |i: usize, r: usize| shown_text(&cols[i], r, cols[i].format.as_ref());
     let mut xcats: Option<Vec<String>> = None;
     let x_at: Vec<Option<f64>> = match x_col {
-        None => (0..rows).map(|r| Some((r + 1) as f64)).collect(),
+        None => Vec::from_fn(rows, |r| Some((r + 1) as f64)),
         Some(x) if cols[x].ty == FrameColType::Number || cols[x].ty == FrameColType::Date => {
-            (0..rows).map(|r| finite(&cell(&cols[x], r))).collect()
+            Vec::from_fn(rows, |r| finite(&cell(&cols[x], r)))
         }
         Some(x) => {
             let (mut cats, mut idx) = (Vec::new(), HashMap::new());
-            let out = (0..rows)
-                .map(|r| {
-                    let t = text(x, r)?;
-                    Some(*idx.entry(t.clone()).or_insert_with(|| {
-                        cats.push(t);
-                        cats.len() - 1
-                    }) as f64)
-                })
-                .collect();
+            let out = Vec::from_fn(rows, |r| {
+                let t = text(x, r)?;
+                Some(*idx.entry(t.clone()).or_insert_with(|| {
+                    cats.push(t);
+                    cats.len() - 1
+                }) as f64)
+            });
             xcats = Some(cats);
             out
         }
@@ -862,7 +884,7 @@ fn chart(c: &mut Call) -> Answer {
     let num_col = |col: &Column| -> Vec<V> { col.values.iter().map(|v| finite(v).map_or(V::Null, V::Num)).collect() };
     let refs_shown = if refs.is_empty() { Cv::NULL } else { whole(Json::Array(refs.clone())) };
     let mut v = V::Null;
-    // A date has no height: plotted by position it would draw its serial ([[C137]] datesNeverSerials), refused until a chart draws a date axis for values ([[D112]] chartDatesHeld).
+    // A date has no height: plotted by position it would draw its serial ([[C137]] datesNeverSerials), refused until a chart draws a date axis for values ([[chart-figures#Chart]] chartDatesHeld).
     let lone_dates = match &raw {
         Cv::V(v @ (V::List(_) | V::Date(_))) => crate::date_values::holds_date(v),
         Cv::Frame(f) => f.columns.len() == 1 && f.columns[0].ty == FrameColType::Date,
@@ -930,23 +952,18 @@ fn chart(c: &mut Call) -> Answer {
             let label_col = &cols[0];
             let num_cols: Vec<&Column> = cols[1..].iter().filter(|c| c.ty == FrameColType::Number).collect();
             labels = Some(num_cols.iter().map(|c| V::str(&c.name)).collect());
-            let rows: Vec<(String, Vec<V>)> = (0..label_col.values.len())
-                .map(|r| {
-                    let name = shown_text(label_col, r, None).unwrap_or_else(|| format!("Row {}", r + 1));
-                    (name, num_cols.iter().map(|c| finite(&cell(c, r)).map_or(V::Null, V::Num)).collect())
-                })
-                .collect();
+            let rows: Vec<(String, Vec<V>)> = Vec::from_fn(label_col.values.len(), |r| {
+                let name = shown_text(label_col, r, None).unwrap_or_else(|| format!("Row {}", r + 1));
+                (name, num_cols.iter().map(|c| finite(&cell(c, r)).map_or(V::Null, V::Num)).collect())
+            });
             v = rows.first().map_or(V::Null, |(_, vs)| list(vs.clone()));
             series = many(&rows);
         } else if cols.len() >= 2 {
-            labels = Some(
-                (0..cols[0].values.len())
-                    .map(|r| match format_cell(cols[0].ty, &cell(&cols[0], r), None) {
-                        V::Null => V::str(""),
-                        x => x,
-                    })
-                    .collect(),
-            );
+            labels =
+                Some(Vec::from_fn(cols[0].values.len(), |r| match format_cell(cols[0].ty, &cell(&cols[0], r), None) {
+                    V::Null => V::str(""),
+                    x => x,
+                }));
             let rows: Vec<(String, Vec<V>)> = cols[1..]
                 .iter()
                 .filter(|c| c.ty == FrameColType::Number)
@@ -1462,7 +1479,7 @@ fn bin_count(k: &V) -> Result<f64, V> {
 /// The lower edges over `[min, max]` (min < max), and each value's bin by them, the last closed.
 pub(crate) fn equal_width_bins(min: f64, max: f64, bins: usize) -> (Vec<f64>, impl Fn(f64) -> usize) {
     let w = (max - min) / bins as f64;
-    let edges: Vec<f64> = (0..bins).map(|i| min + i as f64 * w).collect();
+    let edges: Vec<f64> = Vec::from_fn(bins, |i| min + i as f64 * w);
     let e = edges.clone();
     let idx = move |v: f64| {
         let f = ((v - min) / w).floor();
@@ -1669,7 +1686,7 @@ type Flows = (Vec<String>, Vec<String>, Vec<f64>);
 
 /// A flow that would close a loop is dropped and counted.
 fn acyclic_flows((sources, targets, values): Flows) -> (Flows, usize) {
-    // Names as indices and one stamped visit list, and no walk where nothing can reach the source ([[C120]] linearWork).
+    // Names as indices and one stamped visit list, and no walk where nothing can reach the source ([[engineering#Performance]] linearWork).
     let mut ids: HashMap<String, usize> = HashMap::new();
     let mut adj: Vec<Vec<usize>> = Vec::new();
     let mut fed: Vec<bool> = Vec::new();
@@ -1768,7 +1785,7 @@ fn heatmap_from_columns(cols: &[Column]) -> Grid {
     let named = cols.len() >= 2 && cols[0].ty != FrameColType::Number;
     let data: Vec<&Column> = cols[usize::from(named)..].iter().filter(|c| c.ty == FrameColType::Number).collect();
     let n_rows = data.iter().map(|c| c.values.len()).max().unwrap_or(0);
-    let z = (0..n_rows).map(|r| data.iter().map(|col| col.values.get(r).and_then(finite)).collect()).collect();
+    let z = Vec::from_fn(n_rows, |r| data.iter().map(|col| col.values.get(r).and_then(finite)).collect());
     let mut rows: Vec<String> =
         if named { col_strings(cols.first()).into_iter().take(n_rows).collect() } else { index_names(n_rows) };
     rows.resize(n_rows, String::new());
@@ -1783,7 +1800,7 @@ fn heatmap_from_table(t: &[V]) -> Grid {
         vec![t.to_vec()]
     };
     let n_cols = rows.iter().map(Vec::len).max().unwrap_or(0);
-    let z = rows.iter().map(|r| (0..n_cols).map(|c| r.get(c).and_then(finite)).collect()).collect();
+    let z = rows.iter().map(|r| Vec::from_fn(n_cols, |c| r.get(c).and_then(finite))).collect();
     (z, index_names(rows.len()), index_names(n_cols))
 }
 
@@ -1832,7 +1849,7 @@ fn grid_axes(z: &V, xs: Option<&V>, ys: Option<&V>) -> Option<Axes> {
     }
     let zg = z
         .iter()
-        .map(|r| (0..cols).map(|j| if let V::List(r) = r { r.get(j).and_then(finite) } else { None }).collect())
+        .map(|r| Vec::from_fn(cols, |j| if let V::List(r) = r { r.get(j).and_then(finite) } else { None }))
         .collect();
     let axis = |raw: Option<&V>, n: usize| -> Option<Vec<f64>> {
         let items = match raw {
@@ -1947,9 +1964,32 @@ fn boxplot(c: &mut Call) -> Answer {
     figure(c, "boxplot", Json::Null, json!({ "kind": "boxplot", "boxes": boxes }), opts, "Boxplot")
 }
 
+/// The first day of the period `day` falls in: itself, its ISO week's Monday, its month's 1st or its year's 1 January.
+fn calendar_period_start(day: i64, period: &str) -> i64 {
+    use crate::date_serial::{civil_from_days, days_from_civil};
+    // Serial 25569 is 01-Jan-1970, a Thursday.
+    let epoch = day - 25569;
+    match period {
+        "week" => day - (epoch + 3).rem_euclid(7),
+        "month" | "year" => {
+            let (y, m, _) = civil_from_days(epoch);
+            days_from_civil(y, if period == "month" { m } else { 1 }, 1) + 25569
+        }
+        _ => day,
+    }
+}
+
 /// Each day in column 0 with the sum of its rows' values: a number from column 1, or 1 for a row without one (a blank
-/// cell, or a second column that isn't numbers), so a frame of dated entries counts them per day.
+/// cell, or a second column that isn't numbers), so a frame of dated entries counts them per day. The options' `period`
+/// sums the days into ISO weeks, months or years instead, each keyed by its first day.
 fn calendar_heatmap(c: &mut Call) -> Answer {
+    let opts = read_options(c)?;
+    let period = match opts.get("period").and_then(Json::as_str) {
+        Some("week") => "week",
+        Some("month") => "month",
+        Some("year") => "year",
+        _ => "day",
+    };
     let frame = first(c, "frame");
     let cols = frame_columns(&frame);
     let serials: Vec<Option<f64>> = cols.first().map_or_else(Vec::new, |col| col.values.iter().map(finite).collect());
@@ -1958,12 +1998,11 @@ fn calendar_heatmap(c: &mut Call) -> Answer {
     for (i, d) in serials.iter().enumerate() {
         let Some(d) = d else { continue };
         let v = amounts.and_then(|col| col.values.get(i)).and_then(finite).unwrap_or(1.0);
-        *by_day.entry(d.floor() as i64).or_insert(0.0) += v;
+        *by_day.entry(calendar_period_start(d.floor() as i64, period)).or_insert(0.0) += v;
     }
     let days: Vec<Json> = by_day.keys().map(|&d| jn(d as f64)).collect();
     let values: Vec<Json> = by_day.values().map(|&v| jn(v)).collect();
-    let opts = read_options(c)?;
-    let payload = json!({ "kind": "calheat", "days": days, "values": values });
+    let payload = json!({ "kind": "calheat", "period": period, "days": days, "values": values });
     figure(c, "calheat", Json::Array(values), payload, opts, "Calendar Heatmap")
 }
 
@@ -1984,9 +2023,149 @@ fn quiver(c: &mut Call) -> Answer {
     figure(c, "quiver", Json::Null, payload, opts, "Vector Field")
 }
 
+// ─── US Map ─────────────────────────────────────────────────────────────────────
+
+const LAT_NAMES: [&str; 2] = ["lat", "latitude"];
+const LON_NAMES: [&str; 4] = ["lon", "lng", "long", "longitude"];
+
+/// The pins of a frame with a latitude and a longitude column, each found by the options' `lat` and `lon` or else by its
+/// usual name. A named column the frame lacks is `#REF!`, and so is a frame with neither name; a row whose place isn't a
+/// pair of finite degrees in range is counted in `skipped` rather than drawn somewhere wrong.
+fn us_map(c: &mut Call) -> Answer {
+    let opts = read_options(c)?;
+    match us_map_figure(c, opts) {
+        Err(V::Err(e)) => {
+            let e = V::Err(e);
+            c.show("cachedChart", e.clone());
+            Ok(vec![("chart".into(), Cv::from(e))])
+        }
+        answer => answer,
+    }
+}
+
+/// The map's figure, or the error the card shows in its place.
+fn us_map_figure(c: &mut Call, opts: Obj) -> Answer {
+    let scope = if c.field_str("scope", "lower48") == "all50" { "all50" } else { "lower48" };
+    let frame = first(c, "frame");
+    let cols = frame_columns(&frame);
+    let key = |s: &str| lower_text(trim_space(s)).into_owned();
+    let find = |k: &str, role: &str, usual: &[&str]| -> Result<Option<usize>, V> {
+        if let Some(name) = opts.get(k).and_then(Json::as_str) {
+            let want = key(name);
+            return cols.iter().position(|c| key(&c.name) == want).map(Some).ok_or_else(|| {
+                err(ErrorCode::Ref, format!("The options name a {role} column \"{name}\", which the data doesn't have"))
+            });
+        }
+        Ok(usual.iter().find_map(|u| cols.iter().position(|c| key(&c.name) == *u)))
+    };
+    let lat_col = find("lat", "latitude", &LAT_NAMES)?;
+    let lon_col = find("lon", "longitude", &LON_NAMES)?;
+    let c_col = find("c", "color", &[])?;
+    let s_col = find("s", "size", &[])?;
+    let t_col = find("annotate", "annotate", &[])?;
+    let mut payload = json!({ "kind": "usmap", "scope": scope, "lat": [], "lon": [], "skipped": 0, "names": {} });
+    if cols.is_empty() {
+        return figure(c, "usmap", Json::Null, payload, opts, "US Map");
+    }
+    let (Some(lat_col), Some(lon_col)) = (lat_col, lon_col) else {
+        return Err(err(
+            ErrorCode::Ref,
+            "The data has no Latitude and Longitude columns; name them with lat= and lon= in the options",
+        ));
+    };
+    if let Some(i) = s_col.filter(|i| cols[*i].ty != FrameColType::Number) {
+        return Err(err(
+            ErrorCode::Type,
+            format!("Column \"{}\" is the size column but holds {}, not numbers", cols[i].name, cols[i].ty),
+        ));
+    }
+    let lats = col_numbers(cols.get(lat_col));
+    let lons = col_numbers(cols.get(lon_col));
+    // With no annotate column, the first text column that isn't the color names each pin.
+    let t_col = t_col.or_else(|| {
+        (0..cols.len())
+            .find(|i| cols[*i].ty == FrameColType::String && Some(*i) != c_col && *i != lat_col && *i != lon_col)
+    });
+    let rows = cols.iter().map(|c| c.values.len()).max().unwrap_or(0);
+    let c_numeric = c_col.is_some_and(|i| cols[i].ty == FrameColType::Number);
+    let (mut lat, mut lon, mut text, mut color, mut size) = (vec![], vec![], vec![], vec![], vec![]);
+    let (mut cats, mut cat_at): (Vec<String>, HashMap<String, usize>) = (vec![], HashMap::new());
+    let (mut c_lo, mut c_hi, mut s_lo, mut s_hi) = (f64::INFINITY, f64::NEG_INFINITY, f64::INFINITY, f64::NEG_INFINITY);
+    let mut skipped = 0usize;
+    for r in 0..rows {
+        let (Some(y), Some(x)) = (lats.get(r).copied().flatten(), lons.get(r).copied().flatten()) else {
+            skipped += 1;
+            continue;
+        };
+        if y.abs() > 90.0 || x.abs() > 180.0 {
+            skipped += 1;
+            continue;
+        }
+        lat.push(jn(y));
+        lon.push(jn(x));
+        if let Some(t) = t_col {
+            text.push(Json::String(shown_text(&cols[t], r, cols[t].format.as_ref()).unwrap_or_default()));
+        }
+        if let Some(ci) = c_col {
+            if c_numeric {
+                let v = finite(&cell(&cols[ci], r));
+                if let Some(v) = v {
+                    c_lo = c_lo.min(v);
+                    c_hi = c_hi.max(v);
+                }
+                color.push(jopt(v));
+            } else {
+                let t = shown_text(&cols[ci], r, cols[ci].format.as_ref()).unwrap_or_default();
+                let at = *cat_at.entry(t.clone()).or_insert_with(|| {
+                    cats.push(t);
+                    cats.len() - 1
+                });
+                color.push(jn(at as f64));
+            }
+        }
+        if let Some(si) = s_col {
+            let v = finite(&cell(&cols[si], r));
+            if let Some(v) = v {
+                s_lo = s_lo.min(v);
+                s_hi = s_hi.max(v);
+            }
+            size.push(jopt(v));
+        }
+    }
+    let p = payload.as_object_mut().expect("an object");
+    let mut names = Obj::new();
+    p.insert("lat".into(), Json::Array(lat));
+    p.insert("lon".into(), Json::Array(lon));
+    p.insert("skipped".into(), jn(skipped as f64));
+    if let Some(t) = t_col {
+        p.insert("text".into(), Json::Array(text));
+        names.insert("text".into(), Json::String(cols[t].name.clone()));
+    }
+    if let Some(ci) = c_col {
+        p.insert("c".into(), Json::Array(color));
+        names.insert("c".into(), Json::String(cols[ci].name.clone()));
+        if c_numeric {
+            if c_lo <= c_hi {
+                p.insert("cRange".into(), json!([jn(c_lo), jn(c_hi)]));
+            }
+        } else {
+            p.insert("cCats".into(), strs(&cats));
+        }
+    }
+    if let Some(si) = s_col {
+        p.insert("s".into(), Json::Array(size));
+        names.insert("s".into(), Json::String(cols[si].name.clone()));
+        if s_lo <= s_hi {
+            p.insert("sRange".into(), json!([jn(s_lo), jn(s_hi)]));
+        }
+    }
+    p.insert("names".into(), Json::Object(names));
+    figure(c, "usmap", Json::Null, payload, opts, "US Map")
+}
+
 // ─── Chart Builder ──────────────────────────────────────────────────────────────
 
-const CB_STR_KEYS: [&str; 43] = [
+const CB_STR_KEYS: [&str; 45] = [
     "title",
     "xlabel",
     "ylabel",
@@ -1995,6 +2174,7 @@ const CB_STR_KEYS: [&str; 43] = [
     "marker",
     "pielabels",
     "radarscale",
+    "stacked",
     "zoom",
     "layout",
     "tiers",
@@ -2030,6 +2210,7 @@ const CB_STR_KEYS: [&str; 43] = [
     "fmt",
     "cbar",
     "origin",
+    "period",
 ];
 const CB_NUM_KEYS: [&str; 8] = ["linewidth", "markersize", "alpha", "fontsize", "vmin", "vmax", "center", "maxgap"];
 
@@ -2165,7 +2346,7 @@ fn chart_cuts(chart: &Json, by_x: bool) -> Json {
 }
 
 /// The curves' segments, and their carried-on ends, bucketed by the stretch of x each spans, so a point looks only at
-/// the segments above or near it ([[C120]] linearWork). A segment too wide to bucket (an end running out of the plot)
+/// the segments above or near it ([[engineering#Performance]] linearWork). A segment too wide to bucket (an end running out of the plot)
 /// is looked at always.
 #[derive(Default)]
 struct SegIndex {
@@ -2536,7 +2717,7 @@ fn conditional_regions(c: &mut Call) -> Answer {
     });
     let rows = cols[0].values.len().max(cols[1].values.len());
     let at: Vec<Option<(f64, f64)>> =
-        (0..rows).map(|r| Some((finite(&cell(&cols[0], r))?, finite(&cell(&cols[1], r))?))).collect();
+        Vec::from_fn(rows, |r| Some((finite(&cell(&cols[0], r))?, finite(&cell(&cols[1], r))?)));
     let present: Vec<(f64, f64)> = at.iter().flatten().copied().collect();
     let grid = flips.as_deref().map(|pieces| PieceGrid::build(pieces, &present));
     let (mut answers, mut margins, mut shown) = (Vec::with_capacity(rows), Vec::with_capacity(rows), Vec::new());
@@ -2574,7 +2755,7 @@ fn conditional_regions(c: &mut Call) -> Answer {
     let axis = |k: usize| {
         let mut col = cols[k].clone();
         col.name = names[k].clone();
-        col.values = (0..rows).map(|r| cell(&cols[k], r)).collect();
+        col.values = Vec::from_fn(rows, |r| cell(&cols[k], r));
         col
     };
     let plain = |name: &str, ty: FrameColType, values: Vec<V>| Column {
@@ -2603,6 +2784,23 @@ fn conditional_regions(c: &mut Call) -> Answer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn calendar_periods_start_on_monday_the_first_and_new_year() {
+        // 46023 is 01-Jan-2026, a Thursday; 45658 is Wednesday 01-Jan-2025, whose ISO week opens Monday 30-Dec-2024.
+        assert_eq!(calendar_period_start(46023, "week"), 46020);
+        assert_eq!(calendar_period_start(46020, "week"), 46020);
+        assert_eq!(calendar_period_start(46026, "week"), 46020);
+        assert_eq!(calendar_period_start(46027, "week"), 46027);
+        assert_eq!(calendar_period_start(45658, "week"), 45656);
+        // 15-Mar-2026 is 46096; 01-Mar-2026 is 46082.
+        assert_eq!(calendar_period_start(46096, "month"), 46082);
+        assert_eq!(calendar_period_start(46096, "year"), 46023);
+        assert_eq!(calendar_period_start(46096, "day"), 46096);
+        // A leap day and a day before 1900 bucket as any other.
+        assert_eq!(calendar_period_start(45351, "month"), 45323);
+        assert_eq!(calendar_period_start(-100, "year"), crate::date_serial::days_from_civil(1899, 1, 1) + 25569);
+    }
 
     /// The walk before the indices: every flow that would close a loop, in order, from string sets.
     fn by_names((sources, targets, values): Flows) -> (Flows, usize) {
@@ -2742,7 +2940,7 @@ mod tests {
             seed = seed * 48271 % 2147483647;
             seed as f64 / 2147483647.0 * 14.0 - 2.0
         };
-        let pts: Vec<(f64, f64)> = (0..3000).map(|_| (r(), r())).collect();
+        let pts: Vec<(f64, f64)> = Vec::from_fn(3000, |_| (r(), r()));
         for &(x, y) in &pts {
             assert_eq!(region_key(&cuts, x, y), plain_key(x, y), "at ({x}, {y})");
         }

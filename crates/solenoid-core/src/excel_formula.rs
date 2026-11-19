@@ -165,7 +165,7 @@ fn is_number_literal(v: &str) -> bool {
         None => all(mant),
         Some((a, f)) => (all(a) && (f.is_empty() || all(f))) || (a.is_empty() && all(f)),
     };
-    mant_ok && exp.is_none_or(|e| all(e.strip_prefix(['+', '-']).unwrap_or(e)))
+    mant_ok && exp.is_none_or(|e| all(e.trim_prefix(['+', '-'])))
 }
 
 fn tokenize(src: &str) -> Option<Vec<Tok>> {
@@ -516,7 +516,56 @@ pub fn parse_formula(expr: &str) -> Option<Ast> {
     if p.p != p.toks.len() {
         return None;
     }
-    Some(node)
+    Some(bracket_params(node))
+}
+
+/// `LAMBDA([Unit Price], SUM([Unit Price]))`: a bracketed parameter names a column with a space, as `[Unit Price]` does in
+/// a computed column. It becomes a plain parameter of that name, and the LAMBDA's own body reads it where it writes the
+/// bracket; a bracket the parameters don't name stays a column read.
+/// A LAMBDA body with each `[name]` its parameters name read as the parameter (`bracket_params`; the LAMBDA card).
+pub fn bind_bracket_params(n: Ast, names: &[String]) -> Ast {
+    let to_name = |a: Ast| bind_bracket_params(a, names);
+    match n {
+        Ast::WholeCol(c) if names.contains(&c) => Ast::Name(c),
+        Ast::Call { name, args } => Ast::Call { name, args: args.into_iter().map(to_name).collect() },
+        Ast::Apply { func, args } => {
+            Ast::Apply { func: Box::map(func, to_name), args: args.into_iter().map(to_name).collect() }
+        }
+        Ast::Unary { op, arg } => Ast::Unary { op, arg: Box::map(arg, to_name) },
+        Ast::Percent(arg) => Ast::Percent(Box::map(arg, to_name)),
+        Ast::Bin { op, l, r } => Ast::Bin { op, l: Box::map(l, to_name), r: Box::map(r, to_name) },
+        other => other,
+    }
+}
+
+fn bracket_params(n: Ast) -> Ast {
+    match n {
+        Ast::Call { name, args } => {
+            let mut args: Vec<Ast> = args.into_iter().map(bracket_params).collect();
+            if name.eq_ignore_ascii_case("LAMBDA") && args.len() > 1 {
+                let last = args.len() - 1;
+                let mut names = Vec::new();
+                for a in &mut args[..last] {
+                    if let Ast::WholeCol(c) = a {
+                        names.push(c.clone());
+                        *a = Ast::Name(c.clone());
+                    }
+                }
+                if !names.is_empty() {
+                    let body = std::mem::replace(&mut args[last], Ast::Blank);
+                    args[last] = bind_bracket_params(body, &names);
+                }
+            }
+            Ast::Call { name, args }
+        }
+        Ast::Apply { func, args } => {
+            Ast::Apply { func: Box::map(func, bracket_params), args: args.into_iter().map(bracket_params).collect() }
+        }
+        Ast::Unary { op, arg } => Ast::Unary { op, arg: Box::map(arg, bracket_params) },
+        Ast::Percent(arg) => Ast::Percent(Box::map(arg, bracket_params)),
+        Ast::Bin { op, l, r } => Ast::Bin { op, l: Box::map(l, bracket_params), r: Box::map(r, bracket_params) },
+        other => other,
+    }
 }
 
 pub fn constant_value(name: &str) -> Option<f64> {
@@ -609,7 +658,7 @@ fn num_of(v: &V) -> V {
 
 /// Two numbers Excel's comparisons read as one: equal to 15 significant digits
 /// (`0.1+0.2=0.3` and `1E+15+0.4=1E+15` are TRUE, `0.1+0.2>0.3` FALSE). Exact equality answers first, and only a pair
-/// already within 1e-14 of each other is rounded, so a comparison over a column stays cheap ([[C120]] linearWork).
+/// already within 1e-14 of each other is rounded, so a comparison over a column stays cheap ([[engineering#Performance]] linearWork).
 pub fn same_to_15(x: f64, y: f64) -> bool {
     if x == y {
         return true;
@@ -640,7 +689,7 @@ pub fn wholly_parenthesized(src: &str) -> bool {
     let (mut depth, mut quoted) = (0i32, false);
     for (i, c) in t.char_indices() {
         match c {
-            '"' => quoted = !quoted,
+            '"' => quoted.toggle(),
             '(' if !quoted => depth += 1,
             ')' if !quoted => {
                 depth -= 1;
@@ -768,5 +817,22 @@ mod tests {
             assert!(matches!(&ast, Ast::Unary { op, .. } if op.as_str() == s));
             assert_eq!(Ast::from_json(&ast.to_json()).as_ref(), Some(&ast));
         }
+    }
+
+    /// A bracketed LAMBDA parameter is a plain parameter with a space; its body reads it where it writes the bracket,
+    /// and a bracket it doesn't name stays a column read. Outside a LAMBDA nothing changes.
+    #[test]
+    fn a_bracketed_lambda_parameter_is_a_name() {
+        let ast = parse_formula("LAMBDA([Unit Price], Qty, [Unit Price] * Qty + SUM([Other]))").expect("parses");
+        let Ast::Call { args, .. } = &ast else { panic!("a call") };
+        assert_eq!(args[0], Ast::Name("Unit Price".into()));
+        assert_eq!(args[1], Ast::Name("Qty".into()));
+        let Ast::Bin { l, r, .. } = &args[2] else { panic!("a sum") };
+        assert!(matches!(&**l, Ast::Bin { l, .. } if **l == Ast::Name("Unit Price".into())));
+        assert!(matches!(&**r, Ast::Call { args, .. } if args[0] == Ast::WholeCol("Other".into())));
+        assert_eq!(parse_formula("[Unit Price] * 2"), parse_formula("[Unit Price]*2"));
+        assert!(
+            matches!(parse_formula("[Unit Price] * 2"), Some(Ast::Bin { l, .. }) if *l == Ast::WholeCol("Unit Price".into()))
+        );
     }
 }

@@ -1,4 +1,4 @@
-//! [[C58]] tableInputRawText, [[C48]] appendLadder, [[B11]] maximalMerge, [[B14]] oneDesignSystem,
+//! [[C58]] tableInputRawText, [[C48]] appendLadder, [[B11]] maximalMerge, [[components#The design system]],
 //! [[C50]] lambdaBindsByName.
 //! The linear-algebra cards and the LAMBDA helpers over a table.
 
@@ -178,7 +178,7 @@ fn table_mult(c: &mut Call) -> Answer {
 
 /// `diag(i)` on the diagonal, `off` elsewhere.
 fn square(n: usize, diag: impl Fn(usize) -> V, off: &V) -> V {
-    grid((0..n).map(|i| (0..n).map(|j| if i == j { diag(i) } else { off.clone() }).collect()))
+    grid((0..n).map(|i| Vec::from_fn(n, |j| if i == j { diag(i) } else { off.clone() })))
 }
 
 fn off_diag(c: &Call) -> (bool, V) {
@@ -413,7 +413,15 @@ pub(crate) enum Body {
 
 /// The body, or the message the card shows and the code its error carries.
 pub(crate) fn resolve(c: &Call, fallback: &str, vars: &[&str]) -> Result<Body, SolError> {
-    if let V::Lambda(lam) = slot(c, "lambda") {
+    if let Some(body) = wired_lambda(c, "lambda", vars)? {
+        return Ok(body);
+    }
+    resolve_typed(c, fallback, vars)
+}
+
+/// The LAMBDA wired into `key`, its parameters matched to `vars` by name; None when nothing is wired there.
+pub(crate) fn wired_lambda(c: &Call, key: &str, vars: &[&str]) -> Result<Option<Body>, SolError> {
+    if let V::Lambda(lam) = slot(c, key) {
         let unknown: Vec<&str> = lam.params.iter().map(String::as_str).filter(|p| !vars.contains(p)).collect();
         if !unknown.is_empty() {
             return Err(sol_error(
@@ -422,8 +430,12 @@ pub(crate) fn resolve(c: &Call, fallback: &str, vars: &[&str]) -> Result<Body, S
             ));
         }
         let order = lam.params.iter().map(|p| vars.iter().position(|v| v == p)).collect();
-        return Ok(Body::Lambda(lam, order));
+        return Ok(Some(Body::Lambda(lam, order)));
     }
+    Ok(None)
+}
+
+fn resolve_typed(c: &Call, fallback: &str, vars: &[&str]) -> Result<Body, SolError> {
     let inline = match c.unwired("formula") {
         V::Str(s) if !trim_space(&s).is_empty() => s.to_string(),
         _ => fallback.to_string(),
@@ -447,6 +459,14 @@ pub(crate) fn resolve(c: &Call, fallback: &str, vars: &[&str]) -> Result<Body, S
 }
 
 impl Body {
+    /// Whether the formula reads the variable at `i` of the names it was bound over; a typed formula, as if it does.
+    pub(crate) fn reads(&self, i: usize) -> bool {
+        match self {
+            Body::Lambda(_, order) => order.contains(&Some(i)),
+            Body::Inline(..) => true,
+        }
+    }
+
     /// The fold's unit wrapper (`unit_fold.rs`) over a table holding a unit cell; None where it has no reading.
     pub(crate) fn fold(&self, kind: FoldKind, m: &[Vec<V>], initial: &V) -> Option<V> {
         match self {
@@ -460,15 +480,19 @@ impl Body {
     }
 
     pub(crate) fn call(&self, ev: &Eval, args: &[V]) -> V {
+        self.call_by(ev, &|i| args.get(i).cloned().unwrap_or(V::Undef))
+    }
+
+    /// The formula's answer, each variable it reads asked of `get` by its place among the names it was bound over: a
+    /// caller with many names builds only the few a LAMBDA reads (Greedy Queue's and Local Search's inner loops).
+    pub(crate) fn call_by(&self, ev: &Eval, get: &dyn Fn(usize) -> V) -> V {
         let r = match self {
             Body::Lambda(lam, order) => {
-                let argv: Vec<V> =
-                    order.iter().map(|i| i.and_then(|i| args.get(i).cloned()).unwrap_or(V::Undef)).collect();
+                let argv: Vec<V> = order.iter().map(|i| i.map_or(V::Undef, get)).collect();
                 ev.call_lambda(lam, &argv)
             }
             Body::Inline(ast, names) => {
-                let env: Env =
-                    names.iter().cloned().zip(args.iter().cloned().chain(std::iter::repeat(V::Undef))).collect();
+                let env: Env = names.iter().cloned().enumerate().map(|(i, n)| (n, get(i))).collect();
                 return ev.run(ast, &Rc::new(env));
             }
         };
@@ -582,7 +606,7 @@ fn by_axis(c: &mut Call) -> Answer {
     let vectors: Vec<Vec<V>> = if by_row {
         m.clone()
     } else {
-        (0..m[0].len()).map(|j| m.iter().map(|r| r.get(j).cloned().unwrap_or(V::Undef)).collect()).collect()
+        Vec::from_fn(m[0].len(), |j| m.iter().map(|r| r.get(j).cloned().unwrap_or(V::Undef)).collect())
     };
     let ev = Eval::default();
     let out: Vec<V> = vectors.into_iter().map(|vec| result_cell(&body.call(&ev, &[list(vec)]))).collect();
@@ -711,9 +735,7 @@ fn table_raw_cells(text: &str) -> Vec<Vec<String>> {
     while cols > 1 && raw.iter().all(|r| r.get(cols - 1).is_none_or(|x| trim_space(x).is_empty())) {
         cols -= 1;
     }
-    raw.iter()
-        .map(|r| (0..cols).map(|j| trim_space(r.get(j).map_or("", String::as_str)).to_string()).collect())
-        .collect()
+    raw.iter().map(|r| Vec::from_fn(cols, |j| trim_space(r.get(j).map_or("", String::as_str)).to_string())).collect()
 }
 
 fn table_input(c: &mut Call) -> Answer {
@@ -983,8 +1005,7 @@ fn expand(c: &mut Call) -> Answer {
 fn set_cells(m: &[Vec<V>], writes: &[(V, V, V)]) -> Result<V, V> {
     let rows = m.len();
     let cols = m.first().map_or_default(Vec::len);
-    let mut out: Vec<Vec<V>> =
-        m.iter().map(|r| (0..cols).map(|j| r.get(j).cloned().unwrap_or(V::Null)).collect()).collect();
+    let mut out: Vec<Vec<V>> = m.iter().map(|r| Vec::from_fn(cols, |j| r.get(j).cloned().unwrap_or(V::Null))).collect();
     let ref_err = |n: f64, max: usize, what: &str| {
         Ok(err(ErrorCode::Ref, format!("{what} {} is outside 1…{max}", number_to_string(n))))
     };

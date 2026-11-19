@@ -1,4 +1,4 @@
-//! [[C47]] equationNode, [[C25]] firstClassUnits. The Expression card, its formula read over its inputs and wrapped
+//! [[equation-solver]], [[C25]] firstClassUnits. The Expression card, its formula read over its inputs and wrapped
 //! in their units; the Equation card and Time Value of Money, a relation solved for its one unwired variable.
 
 use super::Cv;
@@ -173,8 +173,8 @@ fn tag_result(v: &V) -> V {
     }
 }
 
-/// The answer with the InlineCast's pick run on it, as Cast converts ([[D113]] inlineCast); the result socket reads its
-/// type off what comes out ([[D117]] emptyKeepsLastType).
+/// The answer with the InlineCast's pick run on it, as Cast converts ([[socket-lattice#The InlineCast]] inlineCast); the result socket reads its
+/// type off what comes out ([[socket-lattice#Requirements]] emptyKeepsLastType).
 pub(crate) fn typed_answer(c: &mut Call, result: V) -> V {
     if result.is_sol_error() {
         return result;
@@ -314,6 +314,8 @@ fn ast_to_formula(n: &Ast) -> String {
         Ast::WholeCol(name) => format!("[{name}]"),
         Ast::Str(v) => format!("\"{v}\""),
         Ast::Bool(v) => (if *v { "TRUE()" } else { "FALSE()" }).into(),
+        // A bracketed LAMBDA parameter (`bracket_params`) is a name with a space, written back in its brackets.
+        Ast::Name(name) if !is_ident(name) => format!("[{name}]"),
         Ast::Name(name) => name.clone(),
         Ast::Call { name, args: a } => format!("{name}({})", args(a)),
         Ast::Apply { func, args: a } => format!("({})({})", ast_to_formula(func), args(a)),
@@ -663,14 +665,12 @@ fn check_equals(l: &V, r: &V) -> V {
             V::List(x) => x.get(i).cloned().unwrap_or(V::Undef),
             other => other.clone(),
         };
-        let out = (0..len(l).max(len(r)))
-            .map(|i| match (at(l, i), at(r, i)) {
-                (a @ V::Err(_), _) => a,
-                (_, b @ V::Err(_)) => b,
-                (V::Num(a), V::Num(b)) => V::Bool(equals_within(a, b)),
-                _ => V::Null,
-            })
-            .collect();
+        let out = Vec::from_fn(len(l).max(len(r)), |i| match (at(l, i), at(r, i)) {
+            (a @ V::Err(_), _) => a,
+            (_, b @ V::Err(_)) => b,
+            (V::Num(a), V::Num(b)) => V::Bool(equals_within(a, b)),
+            _ => V::Null,
+        });
         return list(out);
     }
     match (l, r) {

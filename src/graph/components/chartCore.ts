@@ -1,7 +1,7 @@
 // [[C100]] chartIsAValue, [[B2]] webTryDesktopFull
 // Must stay recharts-free: a helper imported from here must not drag recharts into the main bundle.
 import { themeColor } from "./themeColor";
-import { useState, useSyncExternalStore } from "react";
+import { createContext, useContext, useState, useSyncExternalStore } from "react";
 import { appThemeStore } from "../appTheme";
 import { resolveColor, type PaletteSlot } from "../palette";
 import { dateTrunc, dateFromParts } from "../nodes/dateOps";
@@ -19,20 +19,44 @@ const SERIES_SLOTS: PaletteSlot[] = [
 ];
 
 // recharts writes colors as SVG attributes, where CSS var() doesn't resolve.
+/** Where a figure draws, for the styling it reads: an HTML Page's slot, so the page's CSS variables (its colors,
+ *  `--chart-1`…, `--chart-font-scale`) reach the charts in it ([[reports-and-notes#HTML pages]]); none reads the app's. */
+export const FigureScope = createContext<Element | null>(null);
+
+/** The text scale the figure's scope sets (`--chart-font-scale`), 1 outside one. */
+export function useFigureFontScale(): number {
+  const scope = useContext(FigureScope);
+  if (!scope) return 1;
+  const n = parseFloat(getComputedStyle(scope).getPropertyValue("--chart-font-scale"));
+  return Number.isFinite(n) && n > 0 ? n : 1;
+}
+
 export function useChartColors() {
   useSyncExternalStore(appThemeStore.subscribe, appThemeStore.version);
-  const get = (name: string, fallback: string) => themeColor(name, fallback);
+  const figure = useContext(FigureScope);
+  const scope = figure ?? document.documentElement;
+  const get = (name: string, fallback: string) => themeColor(name, fallback, scope);
   return {
     grid: get("--border-strong", "#3a3a3a"),
     axis: get("--text-dim", "#888"),
     track: get("--gauge-track", "#4d5157"),
-    viz: resolveColor("gold"),
+    // One series is the first series: a scope's `--chart-1` colors it too.
+    viz: (figure ? themeColor("--chart-1", "", figure) : "") || resolveColor("gold"),
   };
 }
 
+/** The series colors in order: a scope's `--chart-1`, `--chart-2`… where it sets them, else the palette's. */
 export function useSeriesColors(): string[] {
   useSyncExternalStore(appThemeStore.subscribe, appThemeStore.version);
-  return SERIES_SLOTS.map((slot) => resolveColor(slot));
+  const scope = useContext(FigureScope);
+  return SERIES_SLOTS.map((slot, i) => (scope ? themeColor(`--chart-${i + 1}`, "", scope) : "") || resolveColor(slot));
+}
+
+/** The series colors with the error color (vermilion, `--sol-error`) and the neutral gray left out: for marks that each
+ *  stand for one thing beside many, where a red one would read as a fault and a gray one as nothing (Describe's tiles). */
+export function useDataColors(): string[] {
+  useSyncExternalStore(appThemeStore.subscribe, appThemeStore.version);
+  return SERIES_SLOTS.filter((slot) => slot !== "vermilion" && slot !== "gray").map((slot) => resolveColor(slot));
 }
 
 /** The color of a Conditional Regions label at `i`, the categorical palette in turn. */
@@ -71,13 +95,15 @@ const sig3 = (n: number): string => String(Number(n.toPrecision(3)));
 /** A value-axis tick: three significant figures, with K, M, B, T above a thousand. It rounds before it picks the
  *  unit, so 999,999 reads 1M, not 1000K. */
 /** The app's own face, the first family of `--font-sans` or `--font-mono`: a canvas names only it, so no other face can stand in. */
-function appFamily(face: "sans" | "mono"): string {
-  return getComputedStyle(document.documentElement).getPropertyValue(face === "mono" ? "--font-mono" : "--font-sans").split(",")[0].trim();
+function appFamily(face: "sans" | "mono", within: unknown = document.documentElement): string {
+  const el = within instanceof Element ? within : document.documentElement;
+  return getComputedStyle(el).getPropertyValue(face === "mono" ? "--font-mono" : "--font-sans").split(",")[0].trim();
 }
 
-/** A canvas font in the app's face, since a canvas can't read a CSS variable itself. */
-export function canvasFont(weight: number, px: number, face: "sans" | "mono" = "sans"): string {
-  return `${weight} ${px}px ${appFamily(face)}`;
+/** A canvas font in the face its canvas sits under (`within`: the canvas, so a page's `--font-sans` reaches it), since a
+ *  canvas can't read a CSS variable itself. */
+export function canvasFont(weight: number, px: number, face: "sans" | "mono" = "sans", within?: unknown): string {
+  return `${weight} ${px}px ${appFamily(face, within)}`;
 }
 
 // A canvas paints its text once, in whatever face is loaded at that moment, and the bundled faces load

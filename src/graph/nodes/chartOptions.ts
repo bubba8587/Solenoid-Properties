@@ -13,6 +13,8 @@ export interface ChartOptions {
   xmin?: number;
   xmax?: number;
   aspect?: AspectMode;
+  /** Calendar Heatmap: sum the days into ISO weeks, months or years. */
+  period?: CalendarPeriod;
   yscale?: AxisScale;
   maxgap?: number;
   linestyle?: LineStyle;
@@ -22,11 +24,15 @@ export interface ChartOptions {
   fontsize?: number;
   pielabels?: PieLabelMode;
   radarscale?: RadarScale;
+  stacked?: StackMode;
   x?: string;
   y?: string[];
   s?: string;
   c?: string;
   annotate?: string;
+  /** The US Map's latitude and longitude columns, by plotly's `scatter_geo` names. */
+  lat?: string;
+  lon?: string;
   by?: string;
   cmap?: string;
   vmin?: number;
@@ -44,17 +50,21 @@ type AspectMode = "auto" | "equal";
 type AxisScale = "linear" | "log";
 type PieLabelMode = "off" | "outside" | "inside";
 type RadarScale = "axis" | "shared";
+/** The series piled on one another, or each category's piles as shares of 100%. */
+export type StackMode = "stacked" | "percent";
 
 // Update these key lists whenever a renderer learns or drops an option.
 
+export type CalendarPeriod = "day" | "week" | "month" | "year";
+
 export type ChartBuilderKey =
-  | "title" | "xlabel" | "ylabel" | "color" | "grid" | "marker" | "pielabels" | "radarscale" | "zoom"
+  | "title" | "xlabel" | "ylabel" | "color" | "grid" | "marker" | "pielabels" | "radarscale" | "stacked" | "zoom"
   | "layout" | "tiers" | "fit" | "critical" | "baseline" | "arrows" | "today" | "weekends" | "labels" | "histogram" | "minutes" | "window" | "columns"
   | "collapse" | "week" | "fiscal_start" | "status" | "group_by"
   | "cardsize" | "clamp"
   | "x" | "y" | "s" | "c" | "annotate" | "by" | "linestyle" | "aspect" | "xmin" | "xmax"
   | "ymin" | "ymax" | "linewidth" | "markersize" | "alpha" | "fontsize"
-  | "cmap" | "vmin" | "vmax" | "center" | "annot" | "fmt" | "cbar" | "origin" | "yscale" | "maxgap";
+  | "cmap" | "vmin" | "vmax" | "center" | "annot" | "fmt" | "cbar" | "origin" | "yscale" | "maxgap" | "period";
 
 export type ChartTargetId =
   | "column" | "bar" | "line" | "area" | "scatter" | "xyline"
@@ -65,8 +75,10 @@ export type ChartTargetId =
 
 const XY_KEYS: readonly ChartBuilderKey[] =
   ["title", "xlabel", "ylabel", "color", "grid", "ymin", "ymax", "alpha", "fontsize"];
+const BAR_KEYS: readonly ChartBuilderKey[] = [...XY_KEYS, "stacked"];
 const LINE_KEYS: readonly ChartBuilderKey[] =
   ["title", "xlabel", "ylabel", "color", "grid", "marker", "ymin", "ymax", "linewidth", "markersize", "alpha", "fontsize"];
+const AREA_KEYS: readonly ChartBuilderKey[] = [...LINE_KEYS, "stacked"];
 const SCATTER_KEYS: readonly ChartBuilderKey[] =
   ["title", "xlabel", "ylabel", "color", "grid", "x", "y", "s", "c", "cmap", "annotate", "by", "linestyle", "aspect", "yscale",
     "xmin", "xmax", "ymin", "ymax", "linewidth", "markersize", "alpha", "fontsize"];
@@ -84,17 +96,17 @@ const GANTT_CALENDAR_KEYS: readonly ChartBuilderKey[] =
   ["title", "fontsize", "layout", "critical", "minutes", "window", "week"];
 const RECORD_KEYS: readonly ChartBuilderKey[] =
   ["title", "c", "fontsize", "cardsize", "clamp"];
-const CALHEAT_KEYS: readonly ChartBuilderKey[] = ["title", "cmap", "center", "vmin", "vmax", "cbar", "fontsize"];
+const CALHEAT_KEYS: readonly ChartBuilderKey[] = ["title", "period", "cmap", "center", "vmin", "vmax", "cbar", "fontsize"];
 const CONTOUR_KEYS: readonly ChartBuilderKey[] = ["title", "xlabel", "ylabel", "cmap", "center", "vmin", "vmax", "cbar", "fontsize"];
 const FIELD_KEYS: readonly ChartBuilderKey[] = ["title", "cmap", "fontsize"];
 const HEATMAP_KEYS: readonly ChartBuilderKey[] =
   ["title", "xlabel", "ylabel", "cmap", "center", "vmin", "vmax", "annot", "fmt", "cbar", "aspect", "origin", "fontsize"];
 
 export const CHART_BUILDER_TARGETS: Record<ChartTargetId, { label: string; group: string; op: ChartValueOp; keys: readonly ChartBuilderKey[]; hidden?: boolean }> = {
-  column:    { label: "Column",           group: "Cartesian",    op: "column", keys: XY_KEYS },
-  bar:       { label: "Bar",              group: "Cartesian",    op: "bar", keys: XY_KEYS },
+  column:    { label: "Column",           group: "Cartesian",    op: "column", keys: BAR_KEYS },
+  bar:       { label: "Bar",              group: "Cartesian",    op: "bar", keys: BAR_KEYS },
   line:      { label: "Line",             group: "Cartesian",    op: "line", keys: LINE_KEYS },
-  area:      { label: "Area",             group: "Cartesian",    op: "area", keys: LINE_KEYS },
+  area:      { label: "Area",             group: "Cartesian",    op: "area", keys: AREA_KEYS },
   overlay:   { label: "Merge Plots",      group: "Cartesian",    op: "overlay", keys: OVERLAY_KEYS },
   scatter:   { label: "Scatter",          group: "XY",           op: "scatter", keys: SCATTER_KEYS },
   xyline:    { label: "XY Line",          group: "XY",           op: "xyline", keys: XYLINE_KEYS },

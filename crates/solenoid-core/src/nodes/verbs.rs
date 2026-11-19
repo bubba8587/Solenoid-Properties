@@ -29,7 +29,7 @@ pub fn run(kind: &str, c: &mut Call) -> Option<Answer> {
         "HeadNode" => head(c),
         "SortFrameNode" => sort(c),
         "FilterFrameNode" => filter(c),
-        "ColumnsNode" => columns(c),
+        "PickColumnsNode" => columns(c),
         "GroupByFrameNode" => group_by(c),
         "UnpivotNode" => unpivot(c),
         "RenameNode" => rename(c),
@@ -333,10 +333,14 @@ fn group_totals(f: &Cv, keys: &[String], col: &str, agg: &str, depth: f64) -> Cv
         Err(e) => return Cv::V(err(ErrorCode::Error, e.to_string())),
     };
     let core = to_core(&frame);
-    let (out, layout) = match pivot_frame(&core, &spec) {
+    let (mut out, layout) = match pivot_frame(&core, &spec) {
         Ok(r) => r,
         Err(e) => return Cv::V(V::err(e)),
     };
+    // GROUPBY heads its value column with the column's own name, as Excel's does and as it does with no totals.
+    if let Some(last) = out.columns.last_mut() {
+        last.name = col.to_string();
+    }
     let mut answer = from_core(&out);
     for (k, c) in answer.columns.iter_mut().zip(&out.columns) {
         k.unit = c.unit.as_ref().map(|u| u.to_json());
@@ -1098,7 +1102,7 @@ fn on_core(rows: usize, cols: Vec<FrameColumn>, op: Json) -> Result<FrameValue, 
     let numbers = FrameColumn::new(
         CUBE_ROW,
         crate::frame::FrameColType::Number,
-        (0..rows).map(|i| FrameCell::Num(i as f64)).collect(),
+        Vec::from_fn(rows, |i| FrameCell::Num(i as f64)),
     );
     let flat = FrameValue { columns: std::iter::once(numbers).chain(cols).collect() };
     let op: TaggedOp = serde_json::from_value(op).map_err(|e| sol_error(ErrorCode::Error, e.to_string()))?;

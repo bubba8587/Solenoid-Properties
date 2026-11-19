@@ -14,8 +14,8 @@ use crate::excel_functions::{value_text, V};
 use crate::frame::{case_twin, column_not_found, FrameCell, FrameColType, FrameValue};
 use crate::frame_ref::FrameRef;
 use crate::frame_verbs::{
-    append_frames, bind_columns, compile_filter, join_frames, pivot_frame_calc, FilterOp, JoinOpts, PivotCalc,
-    PivotSpec,
+    append_frames, bind_columns, compile_filter, join_frames, pivot_frame_calc, split_pivot_totals, FilterOp, JoinOpts,
+    PivotCalc, PivotSpec,
 };
 use crate::jsnum::{number_to_string, trim_space};
 use crate::string_order::compare_strings;
@@ -74,7 +74,7 @@ fn join_side(v: &Cv, tag: &str) -> Result<(Rc<FrameValue>, Vec<CubeColumn>), V> 
         flat.columns.push(Column {
             name: tag.to_string(),
             ty: FrameColType::Number,
-            values: (0..rows).map(|i| V::Num(i as f64)).collect(),
+            values: Vec::from_fn(rows, |i| V::Num(i as f64)),
             unit: None,
             format: None,
             raw: None,
@@ -145,10 +145,18 @@ fn join(c: &mut Call) -> Answer {
     }
     let lk = trimmed(&lk, "The left key")?;
     let rk = trimmed(&rk, "The right key")?;
-    let rk = if rk.is_empty() { lk.clone() } else { rk };
-    if left.is_nullish() || right.is_nullish() || (lk.is_empty() && how != "cross") {
+    // An as-of join reads a sorted key, so it waits for one; every join waits for both tables.
+    if left.is_nullish() || right.is_nullish() || (lk.is_empty() && how == "asof") {
         return one("frame", V::Null);
     }
+    // Both keys blank match whole rows (`join_whole_rows`); a right key alone names nothing to match it to.
+    if lk.is_empty() && !rk.is_empty() && how != "cross" {
+        return Err(V::err(sol_error(
+            ErrorCode::Value,
+            "Name the left key too, or leave both keys blank to match whole rows".to_string(),
+        )));
+    }
+    let rk = if rk.is_empty() { lk.clone() } else { rk };
     let direction = c.field_str("asofDirection", "backward").to_string();
     let mut opts = json!({ "leftKey": lk, "rightKey": rk, "how": how, "asofDirection": direction });
     match &tolerance {
@@ -501,16 +509,12 @@ fn combine_filter(f: &Frame, exclude: &Map<String, Json>, wired: &V) -> Option<V
     if active.is_empty() {
         return wired.map(|items| items.iter().map(|v| if let V::Bool(b) = v { Some(*b) } else { None }).collect());
     }
-    Some(
-        (0..row_count(f))
-            .map(|i| {
-                let hidden = active.iter().any(|(ks, col)| {
-                    col.is_some_and(|k| ks.contains(&pivot_cell_key(k.values.get(i).unwrap_or(&V::Null))))
-                });
-                Some(!hidden && wired.is_none_or(|w| matches!(w.get(i), Some(V::Bool(true)))))
-            })
-            .collect(),
-    )
+    Some(Vec::from_fn(row_count(f), |i| {
+        let hidden = active
+            .iter()
+            .any(|(ks, col)| col.is_some_and(|k| ks.contains(&pivot_cell_key(k.values.get(i).unwrap_or(&V::Null)))));
+        Some(!hidden && wired.is_none_or(|w| matches!(w.get(i), Some(V::Bool(true)))))
+    }))
 }
 
 /// The cube's flat columns, cells in one unit read in it.
@@ -529,10 +533,49 @@ fn flat_cube(k: &Cube) -> Frame {
     Frame { columns, total_rows: None, approx: None, source: None, layout: None }
 }
 
-/// The card's calculated value fields, in socket order: each a name (blank is `Calculated N`) and the LAMBDA wired
-/// to its λ, whose parameters name the columns it reads ([[C50]] lambdaBindsByName). A row with no LAMBDA is skipped.
-fn calc_fields(c: &Call) -> Vec<(String, Rc<crate::eval::LambdaV>)> {
+/// Where a calculated field sits (`calcPlace`): before the value of a name, after the values, or off the pivot (dragged
+/// out, its cable kept).
+#[derive(Clone, PartialEq)]
+enum CalcPlace {
+    Before(String),
+    After,
+    Off,
+}
+
+/// One of the card's calculated value fields with a LAMBDA wired to its λ.
+struct CalcField {
+    id: String,
+    /// Typed or wired; blank is `Calculated N`, N its row on the card.
+    name: String,
+    /// Its parameters name the columns it reads ([[C50]] lambdaBindsByName).
+    lam: Rc<crate::eval::LambdaV>,
+    place: CalcPlace,
+}
+
+/// The card's calculated fields, in the order the card places them: `calcPlace` lists `[id, place]` pairs in the
+/// Values zone's order (a place the name of the value the field sits before, null for after the values, false for
+/// off the pivot), and a field it doesn't list follows them, after the values, in socket order. The places are by
+/// name, so they hold whatever happens to the values list.
+fn calc_fields_all(c: &Call) -> Vec<CalcField> {
     let ids: Vec<String> = c.sockets.iter().filter_map(|s| s.key.strip_prefix("calcFn").map(String::from)).collect();
+    let listed: Vec<(String, CalcPlace)> = c
+        .field("calcPlace")
+        .and_then(Json::as_array)
+        .map(|pairs| {
+            pairs
+                .iter()
+                .filter_map(|p| {
+                    let id = p.get(0)?.as_str()?.to_string();
+                    let place = match p.get(1) {
+                        Some(Json::String(v)) => CalcPlace::Before(v.clone()),
+                        Some(Json::Bool(false)) => CalcPlace::Off,
+                        _ => CalcPlace::After,
+                    };
+                    Some((id, place))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     let mut out = Vec::new();
     for (n, id) in ids.iter().enumerate() {
         let V::Lambda(lam) = super::stats::first(c, &format!("calcFn{id}")) else { continue };
@@ -540,29 +583,124 @@ fn calc_fields(c: &Call) -> Vec<(String, Rc<crate::eval::LambdaV>)> {
             V::Str(s) if !trim_space(&s).is_empty() => trim_space(&s).to_string(),
             _ => format!("Calculated {}", n + 1),
         };
-        out.push((name, lam));
+        let place = listed.iter().find(|(k, _)| k == id).map_or(CalcPlace::After, |(_, p)| p.clone());
+        out.push(CalcField { id: id.clone(), name, lam, place });
     }
+    // Stable: the listed fields in the list's order, then the rest as their sockets stand.
+    out.sort_by_key(|f| listed.iter().position(|(k, _)| *k == f.id).unwrap_or(usize::MAX));
     out
+}
+
+/// The calculated fields on the pivot: those not dragged out.
+fn calc_fields(c: &Call) -> Vec<CalcField> {
+    calc_fields_all(c).into_iter().filter(|f| f.place != CalcPlace::Off).collect()
+}
+
+/// A saved sort (`rowSort`, `colSort`) as PIVOTBY's signed position into the axis's fields, then the values, then the
+/// calculated fields on the pivot. The card saves what it sorts by (`{"by": "field" | "value" | "calc", "name": …}`, a
+/// calculated field by its id, with `"desc": true` for largest first), never a position, so the sort stays on its
+/// field however the fields around it change; while that field is away the order is the default one, 0.
+fn sort_position(saved: Option<&Json>, fields: &[String], values: &[String], calcs: &[CalcField]) -> f64 {
+    let Some(o) = saved.and_then(Json::as_object) else { return 0.0 };
+    let (Some(by), Some(name)) = (o.get("by").and_then(Json::as_str), o.get("name").and_then(Json::as_str)) else {
+        return 0.0;
+    };
+    let at = match by {
+        "field" => fields.iter().position(|f| f == name),
+        "value" => values.iter().position(|v| v == name).map(|i| fields.len() + i),
+        "calc" => calcs.iter().position(|f| f.id == name).map(|k| fields.len() + values.len() + k),
+        _ => None,
+    };
+    let desc = o.get("desc").and_then(Json::as_bool).unwrap_or(false);
+    at.map_or(0.0, |i| if desc { -(i as f64 + 1.0) } else { i as f64 + 1.0 })
+}
+
+/// Every name a LAMBDA body could read as a column: its `[brackets]`, its `@` names and its bare names.
+fn body_names(a: &crate::excel_formula::Ast, out: &mut Vec<String>) {
+    use crate::excel_formula::Ast;
+    match a {
+        Ast::Name(n) | Ast::WholeCol(n) | Ast::AtCol(n) => out.push(n.clone()),
+        Ast::Call { args, .. } => args.iter().for_each(|x| body_names(x, out)),
+        Ast::Apply { func, args } => {
+            body_names(func, out);
+            args.iter().for_each(|x| body_names(x, out));
+        }
+        Ast::Unary { arg, .. } | Ast::Percent(arg) => body_names(arg, out),
+        Ast::Bin { l, r, .. } => {
+            body_names(l, out);
+            body_names(r, out);
+        }
+        Ast::Num(..) | Ast::Str(_) | Ast::Bool(_) | Ast::Blank => {}
+    }
+}
+
+/// Every name a wired LAMBDA could read as a column: its parameters, its captures and its body's names, and the same
+/// of each LAMBDA wired into it, whose body runs over the same rows.
+fn lambda_names(lam: &crate::eval::LambdaV, out: &mut Vec<String>) {
+    out.extend(lam.params.iter().cloned());
+    out.extend(lam.captured.iter().flatten().cloned());
+    if let Some(body) = &lam.body {
+        body_names(body, out);
+    }
+    for v in lam.env.values() {
+        if let V::Lambda(inner) = v {
+            lambda_names(inner, out);
+        }
+    }
 }
 
 /// A calculated field's answer over a cell's rows: each parameter is its column's values in those rows, a date
 /// column's as dates. `@` names this row, and a pivot cell is many rows, so the LAMBDA reads whole lists.
 fn calc_cell(f: &Frame, lam: &crate::eval::LambdaV, rows: &[usize]) -> (FrameCell, bool) {
-    let mut args = Vec::with_capacity(lam.params.len());
-    for p in &lam.params {
-        let Some(col) = f.columns.iter().find(|k| &k.name == p) else {
+    // A column over this cell's rows, a Date column as dates; a name no column has is #NAME?, with a case hint.
+    let slice = |p: &str| -> V {
+        let Some(col) = f.columns.iter().find(|k| k.name == p) else {
             let mut msg = format!("The calculated field reads {p}, which is no column of the table");
             if let Some(h) = case_twin(p, f.columns.iter().map(|k| k.name.as_str())) {
                 msg.push_str(&format!(". Column names are case sensitive: the table has \"{h}\""));
             }
-            let e = sol_error(ErrorCode::Name, msg);
-            return (FrameCell::Err(Rc::new(e)), false);
+            return V::err(sol_error(ErrorCode::Name, msg));
         };
-        let items =
-            V::List(rows.iter().map(|&i| col.values.get(i).cloned().unwrap_or(V::Null)).collect::<Vec<_>>().into());
-        args.push(if col.ty == FrameColType::Date { crate::date_values::wrap(&items) } else { items });
+        // A column a lazy read left out holds no cells: an error, where a blank would compute quietly.
+        if rows.iter().any(|&i| i >= col.values.len()) {
+            let msg = format!("The calculated field reads {p}, which this read of the table left out");
+            return V::err(sol_error(ErrorCode::Ref, msg));
+        }
+        let items = V::List(rows.iter().map(|&i| col.values[i].clone()).collect::<Vec<_>>().into());
+        if col.ty == FrameColType::Date {
+            crate::date_values::wrap(&items)
+        } else {
+            items
+        }
+    };
+    let mut args = Vec::with_capacity(lam.params.len());
+    for p in &lam.params {
+        match slice(p) {
+            V::Err(e) => return (FrameCell::Err(e), false),
+            v => args.push(v),
+        }
     }
-    let v = crate::eval::Eval::default().call_lambda(lam, &args);
+    // A LAMBDA card's capture naming a column reads its slice (`lambda_body`). One that names no column reads its
+    // card's own value, wired or typed; with neither it would read the empty slot, a 0, and a misspelled column would
+    // compute quietly, so it is #NAME? (as is one off a column only by letter case, with the hint).
+    for name in lam.captured.iter().flatten() {
+        if f.columns.iter().any(|k| &k.name == name) {
+            continue;
+        }
+        if case_twin(name, f.columns.iter().map(|k| k.name.as_str())).is_some()
+            && let V::Err(e) = slice(name)
+        {
+            return (FrameCell::Err(e), false);
+        }
+        if lam.empty.contains(name) {
+            let msg = format!(
+                "The calculated field reads {name}, which is no column of the table and has no value on its LAMBDA card"
+            );
+            return (FrameCell::Err(Rc::new(sol_error(ErrorCode::Name, msg))), false);
+        }
+    }
+    // `[Column]` in the body that no parameter names reads the same slice, so a field needs no parameters at all.
+    let v = crate::eval::Eval::with_slices(&slice).call_lambda(lam, &args);
     match v {
         V::List(_) => {
             let e = sol_error(
@@ -697,9 +835,13 @@ fn pivot(c: &mut Call) -> Answer {
             for n in names_of(c.field("detailFields")) {
                 want(n);
             }
-            for (_, lam) in calc_fields(c) {
-                for p in &lam.params {
-                    want(p.clone());
+            // A calculated field reads its parameters' columns, and the columns its body names with no parameter: a
+            // `[Column]`, or a bare name its card captured. Left out, they'd read as the card's empty slot, a 0.
+            for field in calc_fields(c) {
+                let mut names = Vec::new();
+                lambda_names(&field.lam, &mut names);
+                for n in names {
+                    want(n);
                 }
             }
             wanted
@@ -823,7 +965,9 @@ fn pivot_over(c: &mut Call, fv: Cv, source: Option<&Cv>) -> Answer {
     let mut spec = json!({
         "rowFields": row_fields, "colFields": col_fields, "values": values, "funcs": funcs,
         "rowTotalDepth": num("rowTotalDepth"), "colTotalDepth": num("colTotalDepth"),
-        "rowSort": num("rowSort"), "colSort": num("colSort"), "relativeTo": num("relativeTo"),
+        "rowSort": json_num(sort_position(c.field("rowSort"), &row_fields, &values, &calcs)),
+        "colSort": json_num(sort_position(c.field("colSort"), &col_fields, &values, &calcs)),
+        "relativeTo": num("relativeTo"),
         "details": fields.details,
     });
     if let Some(m) = filter {
@@ -835,9 +979,14 @@ fn pivot_over(c: &mut Call, fv: Cv, source: Option<&Cv>) -> Answer {
     };
     let calcs: Vec<PivotCalc> = calcs
         .iter()
-        .map(|(name, lam)| PivotCalc {
-            name: name.clone(),
-            eval: Box::new(move |rows: &[usize]| calc_cell(f, lam, rows)),
+        .map(|field| PivotCalc {
+            name: field.name.clone(),
+            eval: Box::new(move |rows: &[usize]| calc_cell(f, &field.lam, rows)),
+            // A place before a value that is away now is after the values, until the value is back.
+            at: match &field.place {
+                CalcPlace::Before(v) => values.iter().position(|x| x == v),
+                _ => None,
+            },
         })
         .collect();
     let (out, layout) = match pivot_frame_calc(&to_core(f), &spec, &calcs) {
@@ -848,12 +997,28 @@ fn pivot_over(c: &mut Call, fv: Cv, source: Option<&Cv>) -> Answer {
             return answer(Cv::V(e));
         }
     };
-    let mut frame = from_core(&out);
-    for (k, core) in frame.columns.iter_mut().zip(&out.columns) {
-        k.unit = core.unit.as_ref().map(|u| u.to_json());
+    // The totals are the Pivot view's, never the Frame's ([[table-popup#The Pivot view]] pivotView): the output is the leaf rows by the leaf
+    // columns, the totals ride on its layout, and Export totals hands them on as their own Frames.
+    let split = split_pivot_totals(&to_core(f), &out, &layout);
+    let wire = |core: &crate::frame::FrameValue| {
+        let mut w = from_core(core);
+        for (k, kc) in w.columns.iter_mut().zip(&core.columns) {
+            k.unit = kc.unit.as_ref().map(|u| u.to_json());
+        }
+        w
+    };
+    let mut layout = layout;
+    layout["totals"] = split.totals;
+    // Every wired field's name by id, on the pivot or dragged out, for Configure Fields and the card's summary.
+    layout["calcNames"] = Json::Object(calc_fields_all(c).into_iter().map(|f| (f.id, Json::String(f.name))).collect());
+    let mut plain = wire(&split.plain);
+    plain.layout = Some(Rc::new(layout));
+    let plain = Cv::Frame(Rc::new(plain));
+    c.show("cachedResult", plain.clone());
+    let mut outs = vec![("frame".to_string(), plain)];
+    if c.field("exportTotals").and_then(Json::as_bool).unwrap_or(false) {
+        outs.push(("rowTotals".into(), Cv::Frame(Rc::new(wire(&split.row_totals)))));
+        outs.push(("colTotals".into(), Cv::Frame(Rc::new(wire(&split.col_totals)))));
     }
-    frame.layout = Some(Rc::new(layout));
-    let frame = Cv::Frame(Rc::new(frame));
-    c.show("cachedResult", frame.clone());
-    answer(frame)
+    Ok(outs)
 }

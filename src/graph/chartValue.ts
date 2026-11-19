@@ -3,7 +3,7 @@ import type { CardColType, CardPlan } from "./cardLayout";
 import type { RecordPlacement } from "./recordLayout";
 import { formatNumberWithAnnotation, isDateStyle, type FormatAnnotation } from "./formatAnnotationStore";
 import { type ChartOp, CHART_OP_META } from "./nodes/visual";
-import type { ChartOptions, LineStyle } from "./nodes/chartOptions";
+import type { CalendarPeriod, ChartOptions, LineStyle } from "./nodes/chartOptions";
 import type { GanttPayload } from "@solenoid/gantt-layout";
 
 export interface KpiPayload {
@@ -68,6 +68,8 @@ export interface BoxplotPayload {
 }
 export interface CalHeatPayload {
   kind: "calheat";
+  /** What a cell is; each of `days` is its period's first day (an ISO week's Monday, a month's 1st, 1 January). */
+  period: CalendarPeriod;
   days: number[];
   values: number[];
 }
@@ -127,12 +129,18 @@ interface RecordDeck {
   formats: (FormatAnnotation | null)[];
   chipCols: number[];
   plan: CardPlan;
-  /** The authored card layout's placements ([[D111]] cardLayouts); none draws the inferred cards. */
+  /** The authored card layout's placements ([[table-popup#The Cards view]]); none draws the inferred cards. */
   layout?: RecordPlacement[];
   rows: (number | string | null)[][];
   /** Each drawn row's 1-based number in the frame. */
   rowNumbers: number[];
 }
+/** A Record or Cards figure other than Detail is a stack of boxes taller than its frame, not a drawing that scales: a
+ *  surface scrolls it from its top. Detail scrolls inside its own grid. */
+export function stacksRecords(v: ChartValue | null | undefined): boolean {
+  return v?.op === "record" && v.payload?.kind === "record" && v.payload.view !== "detail";
+}
+
 export interface RecordPayload {
   /** No layout was written, so the boxes flow into as many columns as fit rather than one stacked column. */
   flow?: boolean;
@@ -217,15 +225,43 @@ export interface LadderPayload {
   /** Options left out before the ladder: failing a deal-breaker, marked Never, or needing one of those. */
   ruledOut: string[];
 }
+/** A daily weather forecast, a day per index; `today` is the day it was made, which the figure marks. */
+export interface ForecastPayload {
+  kind: "forecast";
+  days: number[];
+  high: (number | null)[];
+  low: (number | null)[];
+  rainMm: (number | null)[];
+  rainPct: (number | null)[];
+  conditions: string[];
+  unit: "C" | "F";
+  today: number;
+}
+/** Pins in row order; `c` is a number, or an index into `cCats` when the color column is text. */
+export interface UsMapPayload {
+  kind: "usmap";
+  scope: "lower48" | "all50";
+  lat: number[];
+  lon: number[];
+  text?: string[];
+  c?: (number | null)[];
+  cCats?: string[];
+  cRange?: [number, number];
+  s?: (number | null)[];
+  sRange?: [number, number];
+  names: { c?: string; s?: string; text?: string };
+  /** Rows without a finite latitude and longitude in range. */
+  skipped: number;
+}
 export type ChartPayload =
   | KpiPayload | ScalePayload | ProportionPayload | SankeyPayload | SurfacePayload
   | ContourPayload | WaterfallPayload | CandlePayload | BoxplotPayload
   | CalHeatPayload | HeatmapPayload | QuiverPayload | RecordPayload | OverlayPayload
-  | XYPayload | GanttPayload | LadderPayload;
+  | XYPayload | GanttPayload | LadderPayload | ForecastPayload | UsMapPayload;
 
 const CHART_SPECIAL_OPS = [
   "kpi", "scale", "proportion", "sankey", "surface", "contour", "waterfall",
-  "candle", "boxplot", "calheat", "heatmap", "quiver", "record", "overlay", "gantt", "ladder",
+  "candle", "boxplot", "calheat", "heatmap", "quiver", "record", "overlay", "gantt", "ladder", "forecast", "usmap",
 ] as const;
 
 export type ChartValueOp = ChartOp | (typeof CHART_SPECIAL_OPS)[number];

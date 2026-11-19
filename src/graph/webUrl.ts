@@ -1,4 +1,4 @@
-// [[C103]] untrustedContentSeams, [[B18]] safeToShare
+// [[engineering#Untrusted content]], [[B18]] safeToShare
 // Whether loading an address is a fetch from the web: the browser's own reading of it, so `\\host/x`, `https:\\host`
 // and a tab or newline inside the scheme count as the web too. data: and blob: pictures, and the app's own files, do not.
 
@@ -19,5 +19,5 @@ export function srcsetReachesWeb(srcset: string): boolean {
   return srcset.split(",").some((c) => { const url = c.trim().split(/\s+/)[0]; return !!url && isWebUrl(url); });
 }
 
-/** CSS that can fetch: `url(…)`, `image-set(…)` or `@import`. */
-export const CSS_FETCH = /url\s*\(|image-set\s*\(|@import/i;
+/** CSS that can fetch: a `url(…)` that isn't inline (`data:` never reaches the network), `image-set(…)` or `@import`. */
+export const CSS_FETCH = /url\s*\((?!\s*['"]?\s*data:)|image-set\s*\(|@import/i;

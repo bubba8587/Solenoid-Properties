@@ -1,4 +1,4 @@
-// [[C107]] obsidianPlugin, [[obsidian-plugin#What's new]]
+// [[obsidian-plugin]], [[obsidian-plugin#What's new]]
 // What changed in the plugin, newest first; the What's New tab shows the entry for the manifest's version.
 // Marketing copy (DESIGN.md section 7): casual is fine, em dashes and untrue claims are not.
 export interface PluginNote {
@@ -11,6 +11,23 @@ export interface PluginNotes {
 }
 
 export const PLUGIN_NOTES: PluginNotes[] = [
+  {
+    version: "0.1.12",
+    notes: [
+      {
+        title: "Solenoid Look plays nicely with TaskNotes",
+        body: "",
+      },
+      {
+        title: "Crisper rounded borders on everyday screens",
+        body: "",
+      },
+      {
+        title: "A guide for AI agents working in your vault",
+        body: "",
+      },
+    ],
+  },
   {
     version: "0.1.11",
     notes: [

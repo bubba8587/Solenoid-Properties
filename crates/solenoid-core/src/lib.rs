@@ -44,6 +44,7 @@ pub mod grid_filters;
 pub mod hash_ops;
 pub mod jsnum;
 pub mod ladder;
+pub mod lp;
 pub mod nodes;
 pub mod plan_files;
 pub mod planners;
@@ -62,6 +63,7 @@ pub mod unit_lists;
 pub mod unit_value;
 pub mod value_kinds;
 pub mod wire;
+pub mod xlsx;
 pub mod zone;
 
 #[cfg(target_arch = "wasm32")]

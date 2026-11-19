@@ -1,4 +1,4 @@
-// [[C130]] rustCore, [[C24]] arraySemantics, [[C10]] socketLattice, [[B17]] typedValueModel, [[C25]] firstClassUnits, [[E9]] errorsKeepOrigin, [[D86]] blankRoles
+// [[C130]] rustCore, [[C24]] arraySemantics, [[C10]] socketLattice, [[B17]] typedValueModel, [[C25]] firstClassUnits, [[error-values#Producers and provenance]], [[D86]] blankRoles
 //! The input boundary every node's `data()` call goes through (`tree/specs/computation/compute-pass.md` § The per-node
 //! wrappers), on the way in and out; the values are the app's JavaScript objects, walked in place.
 
@@ -22,7 +22,7 @@ pub(crate) const LAZY_FRAME_NODES: [&str; 25] = [
     "SortFrameNode",
     "FilterFrameNode",
     "JoinNode",
-    "ColumnsNode",
+    "PickColumnsNode",
     "GroupByFrameNode",
     "UnpivotNode",
     "AppendNode",
@@ -45,7 +45,7 @@ pub(crate) const LAZY_FRAME_NODES: [&str; 25] = [
 ];
 
 /// Classes the guard hands an error input to as a value, instead of answering for them.
-pub(crate) const SEES_ERRORS: [&str; 15] = [
+pub(crate) const SEES_ERRORS: [&str; 16] = [
     "IFErrorNode",
     "IsTestNode",
     "IfNode",
@@ -58,6 +58,7 @@ pub(crate) const SEES_ERRORS: [&str; 15] = [
     "NoteNode",
     "ReportNode",
     "DashboardNode",
+    "HtmlPageNode",
     "ChartNode",
     "CompositeNode",
     "CompositeOutputNode",

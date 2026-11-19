@@ -1,4 +1,4 @@
-// [[C103]] untrustedContentSeams, [[B18]] safeToShare
+// [[engineering#Untrusted content]], [[B18]] safeToShare
 // The one sanitizer for rendered note markdown, network gate included (`reports-and-notes.md` § What is sanitized).
 import DOMPurify from "dompurify";
 import { useSyncExternalStore } from "react";
@@ -59,7 +59,8 @@ export function sanitizeNoteHtml(html: string, nodeId?: string): string {
   _holding = !networkAllowed(nodeId);
   _held = 0;
   try {
-    return DOMPurify.sanitize(html);
+    // A form would submit to its action and move the app's own page: its fields stay, the form goes.
+    return DOMPurify.sanitize(html, { FORBID_TAGS: ["form"] });
   } finally {
     if (_holding && _held > 0) askNetwork("note-images");
     _holding = false;
